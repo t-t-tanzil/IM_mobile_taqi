@@ -19,13 +19,24 @@ import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.Priority
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 private const val UPDATE_INTERVAL_MS = 5_000L
 private const val MIN_UPDATE_INTERVAL_MS = 2_000L
+
+/**
+ * Play Services routinely reports isLocationAvailable=false for a brief moment right after a
+ * fresh registration (before it has warmed up), even when a fix arrives moments later. Treating
+ * that as fatal immediately would make retryLocationUpdates() effectively unable to recover.
+ * Only close the flow if unavailability persists past this grace period.
+ */
+private const val UNAVAILABLE_GRACE_PERIOD_MS = 8_000L
 
 class FusedLocationDataSource @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -47,14 +58,25 @@ class FusedLocationDataSource @Inject constructor(
             .setMinUpdateIntervalMillis(MIN_UPDATE_INTERVAL_MS)
             .build()
 
+        val producerScope = this
+        var unavailabilityJob: Job? = null
+
         val callback = object : LocationCallback() {
             override fun onLocationResult(result: LocationResult) {
-                result.lastLocation?.let { location -> trySend(location.toLocationData()) }
+                result.lastLocation?.let { location ->
+                    unavailabilityJob?.cancel()
+                    trySend(location.toLocationData())
+                }
             }
 
             override fun onLocationAvailability(availability: LocationAvailability) {
-                if (!availability.isLocationAvailable) {
-                    close(LocationUnavailableException())
+                if (availability.isLocationAvailable) {
+                    unavailabilityJob?.cancel()
+                } else if (unavailabilityJob?.isActive != true) {
+                    unavailabilityJob = producerScope.launch {
+                        delay(UNAVAILABLE_GRACE_PERIOD_MS)
+                        close(LocationUnavailableException())
+                    }
                 }
             }
         }
@@ -65,7 +87,10 @@ class FusedLocationDataSource @Inject constructor(
             close(LocationPermissionMissingException())
         }
 
-        awaitClose { fusedLocationClient.removeLocationUpdates(callback) }
+        awaitClose {
+            unavailabilityJob?.cancel()
+            fusedLocationClient.removeLocationUpdates(callback)
+        }
     }
 
     private fun hasLocationPermission(): Boolean =
