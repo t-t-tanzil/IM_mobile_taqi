@@ -9,3 +9,10 @@
 .cxx
 local.properties
 /app/build
+
+# Release signing - never commit the keystore or its credentials.
+# assembleRelease falls back to debug signing when these are absent.
+/keystore/
+keystore.properties
+*.jks
+*.keystore
