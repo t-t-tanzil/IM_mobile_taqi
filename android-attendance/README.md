@@ -119,19 +119,34 @@ caught it).
 The prompts below are **representative** of the kind of direction given throughout the
 engagement, not an exact transcript:
 
-- "Implement Task 1 only for now — a native Android geo-fenced attendance app using Kotlin,
-  Jetpack Compose, Clean Architecture + MVVM, Hilt, and DataStore. Don't implement GPS
-  behavior yet, just the persistence layer."
-- "Now implement the GPS data layer — wrap `FusedLocationProviderClient` behind a
-  `LocationDataSource` interface, expose it as a `Flow`, and map failures to distinct domain
-  exceptions rather than leaking Play Services types."
-- "Run the app on the emulator and actually test it, not just `flutter analyze`/build — I want
-  to know it really works, not just that it compiles."
-- "Do a final read-only code audit before we call Task 1 done — check for domain-layer
-  Android leakage, race conditions, and anything a careful reviewer would flag."
-- "Fix the permission-recovery issue where revoking location permission while the app is
-  backgrounded doesn't route the user back to the request screen — smallest clean fix
-  consistent with the existing architecture, plus tests."
+- **Architecture design**: "Implement Task 1 only for now — a native Android geo-fenced
+  attendance app using Kotlin, Jetpack Compose, Clean Architecture + MVVM, Hilt, and
+  DataStore. Don't implement GPS behavior yet, just the persistence layer."
+- **GPS/geofence implementation**: "Now implement the GPS data layer — wrap
+  `FusedLocationProviderClient` behind a `LocationDataSource` interface, expose it as a
+  `Flow`, and map failures to distinct domain exceptions rather than leaking Play Services
+  types."
+- **StateFlow architecture**: "Combine the office-location and current-location flows into
+  one `StateFlow` the Compose screen collects — no second source of truth for distance or
+  eligibility, and recovery via `flatMapLatest` on a retry signal rather than recreating the
+  ViewModel."
+- **Permission handling**: "Handle location permission properly — distinguish Denied (system
+  dialog can still be shown), PermanentlyDenied (must open Settings), and Granted, and make
+  sure resuming the app after a Settings round-trip re-checks status without opening a second
+  GPS subscription."
+- **Testing**: "Write unit tests for `CalculateDistanceUseCase` and the 50m boundary — sweep
+  values just under, at, and just over the radius, not one happy-path number, and cover the
+  ViewModel's permission/services/temporary-failure branches distinctly."
+- **Debugging the transient GPS problem**: "The screen briefly shows 'location unavailable'
+  right after launch even though a real GPS fix arrives a second later — investigate why on a
+  real emulator, not just in theory, and fix the root cause rather than papering over it with
+  a delay."
+- **Code review / race-condition analysis**: "Do a final read-only code audit before we call
+  Task 1 done — check for domain-layer Android leakage, race conditions, and anything a
+  careful reviewer would flag."
+- **Follow-up fix from that audit**: "Fix the permission-recovery issue where revoking
+  location permission while the app is backgrounded doesn't route the user back to the
+  request screen — smallest clean fix consistent with the existing architecture, plus tests."
 
 ## How to Run
 
@@ -156,6 +171,10 @@ To build a release APK locally (see "Release signing" below for what's needed to
 ```bash
 ./gradlew :app:assembleRelease
 ```
+
+The output APK lands at `android-attendance/app/build/outputs/apk/release/app-release.apk`.
+
+**Release APK: [To be uploaded before final submission]**
 
 ### Release signing
 

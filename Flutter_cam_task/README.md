@@ -215,20 +215,33 @@ race, a widget-lifecycle bug from reading a Cubit inside `dispose()`).
 The prompts below are **representative** of the kind of direction given throughout the
 engagement, not an exact transcript:
 
-- "This is not what Task 2 is — the Flutter task is completely different, go read the
-  assignment document again." (an early wrong attempt at Task 2 — built as an attendance-app
-  duplicate before actually reading the spec — was caught and the project was wiped and
-  restarted correctly)
-- "Implement only the persistent local upload queue for now — capture, camera UI, and sync
-  come later. Here's the exact test list I want covered, including corrupted-data recovery."
-- "Now the sync engine. `UploadCubit`/connectivity/WorkManager/the retry button must all call
-  through one central `SyncEngine.sync()` — never re-implement the upload algorithm in more
-  than one place."
-- "Implement WorkManager background sync. The existing `SyncEngine` concurrency guard must
-  remain the final protection — do not create a second, unrelated lock in the worker. Explain
-  the `SyncResult`→WorkManager-result mapping you choose, including why."
-- "Verify this live on a real emulator, not just with unit tests — I want actual logcat proof
-  the background isolate ran, not just 'the code should work.'"
+- **Re-scoping correction**: "This is not what Task 2 is — the Flutter task is completely
+  different, go read the assignment document again." (an early wrong attempt at Task 2 —
+  built as an attendance-app duplicate before actually reading the spec — was caught and the
+  project was wiped and restarted correctly)
+- **Camera lifecycle + zoom/focus synchronization**: "Build `CameraPreviewScreen` — pinch, a
+  slider, and quick-select buttons must all drive the same zoom state clamped to the device's
+  real reported range, and tap-to-focus needs a visual indicator at the exact tap point.
+  Handle camera lifecycle properly: dispose on background, reinitialize on resume, no leaked
+  or duplicate controllers."
+- **Persistent upload queue**: "Implement only the persistent local upload queue for now —
+  capture, camera UI, and sync come later. Here's the exact test list I want covered,
+  including corrupted-data recovery and stale-`uploading` recovery after a kill."
+- **SyncEngine architecture**: "Now the sync engine. `UploadCubit`/connectivity/WorkManager/
+  the retry button must all call through one central `SyncEngine.sync()` — never re-implement
+  the upload algorithm in more than one place."
+- **Connectivity handling**: "Don't trust `connectivity_plus`'s online/offline signal alone —
+  a Wi-Fi interface being 'connected' isn't proof of internet access. Layer a real reachability
+  check on top before ever reporting online."
+- **WorkManager + isolate constraints**: "Implement WorkManager background sync. The
+  background isolate can't touch `get_it`, `BuildContext`, or any UI-layer Cubit — build its
+  own minimal dependency chain. The existing `SyncEngine` concurrency guard must remain the
+  final protection — do not create a second, unrelated lock in the worker."
+- **Testing / race-condition analysis**: "Write a test that fires retry, connectivity-restore,
+  and a simulated third trigger at the same time against the same `SyncEngine` instance and
+  asserts exactly one real execution, not three."
+- **Live verification**: "Verify this live on a real emulator, not just with unit tests — I
+  want actual logcat proof the background isolate ran, not just 'the code should work.'"
 
 ## How to Run
 
@@ -258,6 +271,10 @@ flutter build apk --release
 (The release build currently signs with the debug keystore, matching the default Flutter
 template — see `android/app/build.gradle.kts`. This is fine for an assessment submission; a
 real release would need a dedicated, non-debug signing key.)
+
+The output APK lands at `Flutter_cam_task/build/app/outputs/flutter-apk/app-release.apk`.
+
+**Release APK: [To be uploaded before final submission]**
 
 ## Screenshots
 
