@@ -265,10 +265,12 @@ real release would need a dedicated, non-debug signing key.)
 |---|---|
 | ![Camera preview](screenshots/camera_preview.png) Camera preview | ![Tap to focus](screenshots/tap_to_focus.png) Tap-to-focus indicator |
 | ![Batch captured](screenshots/batch_captured.png) Batch captured, ready to queue | ![Pending uploads](screenshots/pending_uploads.png) Pending uploads list |
-| ![Upload failed](screenshots/upload_failed.png) A failed upload, queued for retry | ![Retry succeeded](screenshots/retry_success.png) Empty queue after a successful retry |
+| ![Upload failed](screenshots/upload_failed.png) A failed upload — "Failed" badge, per-batch retry icon, and snackbar all visible | ![Retry succeeded](screenshots/retry_success.png) Empty queue after a successful retry |
 | ![Reboot persistence](screenshots/reboot_persistence.png) Queue intact after a full device reboot | |
 
 *All of the above are real captures from live device/emulator testing during this
-engagement, not staged or fabricated. They are not an exhaustive set — e.g. the zoom controls
-and the "Failed" per-batch retry icon mid-tap aren't separately captured yet; add more to
-`screenshots/` and this table as needed before final submission.*
+engagement, not staged or fabricated. Not yet captured: the zoom slider/buttons — the AVD's
+virtual camera used for this testing doesn't visibly render its zoom range (it reports a
+range narrow enough that the quick-select buttons don't clear the filter in
+`zoom_button_calculator.dart`), so a screenshot of them wouldn't show anything meaningful
+without a physical device.*

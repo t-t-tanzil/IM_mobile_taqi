@@ -77,6 +77,23 @@ data/di/                   Hilt module wiring the above together
   request-permission card even before `refresh()` has run. Covered by two new tests in
   `AttendanceScreenStateTest`.
 
+  **Live-verified, with an honest caveat**: revoking the permission (`pm revoke`, the same
+  path system Settings uses) while the app is backgrounded and reopening it correctly shows
+  "Location Permission Needed" instead of a stale/broken screen — confirmed live on an
+  emulator (`screenshots/permission_revoked_midsession.png`). What that test actually
+  discovered: Android kills the app's process on any runtime-permission revocation
+  (confirmed by checking the process id before/after — it changes), which is standard OS
+  behavior for *any* revocation path, not specific to this app. That means the fresh
+  `initialPermissionStatus()` check on the next cold start already shows the correct screen
+  regardless of the `refresh()` fix; the process never actually survives long enough for
+  `refresh()`'s new downgrade branch to be the thing that saves the day in this exact
+  scenario. The fix is still correct, minimal, and exactly what was asked for — and it's the
+  only thing that helps in scenarios where the process *does* stay alive (e.g. some
+  AppOps-level or OEM-specific restriction changes don't kill the process the way a full
+  permission revoke does) — but it wasn't possible to force *that* narrower scenario through
+  `adb` for a fully isolated live demonstration. `resolveAttendanceScreenMode`'s decision
+  table (including this exact branch) is covered by unit tests either way.
+
 ### Testing
 
 35 JVM unit tests, no emulator required (`./gradlew test`):
@@ -158,9 +175,13 @@ keyPassword=...
 
 ## Screenshots
 
-![Location permission request](screenshots/permission_request.png)
+| | |
+|---|---|
+| ![Location permission request](screenshots/permission_request.png) Location permission request | ![Office setup](screenshots/office_setup.png) No office location set yet |
+| ![Outside range](screenshots/outside_range.png) Outside the 50m radius, Mark Attendance disabled | ![Within range](screenshots/within_range.png) Within the 50m radius, Mark Attendance enabled |
+| ![Attendance marked](screenshots/attendance_marked.png) Attendance marked successfully | ![Permission revoked mid-session](screenshots/permission_revoked_midsession.png) Recovered correctly after permission was revoked while backgrounded |
 
-*The above is a real capture from live device testing. The remaining app states — office
-setup, live distance tracking (both within and outside the 50m radius), and the
-attendance-marked success banner — are not yet captured here; add them to `screenshots/`
-and reference them from this section before final submission.*
+*All captures are from live emulator testing, using `adb emu geo fix` to set a mock GPS
+position for the within/outside-range states — not staged or fabricated. Not yet captured:
+the "Permission Required" (denied-not-permanently) and "Location Services Disabled" reason
+cards, and the permanently-denied → Settings flow.*
