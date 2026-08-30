@@ -60,8 +60,14 @@ fun rememberLocationPermissionState(): LocationPermissionState {
             statusProvider = { status },
             requestPermission = { launcher.launch(Manifest.permission.ACCESS_FINE_LOCATION) },
             refresh = {
-                if (isPermissionGranted(context)) {
-                    status = LocationPermissionStatus.Granted
+                status = when {
+                    isPermissionGranted(context) -> LocationPermissionStatus.Granted
+                    // Permission was revoked while the app was backgrounded (e.g. via
+                    // system Settings) - downgrade the stale Granted status so the UI
+                    // routes back to the request flow instead of trusting it silently.
+                    // PermanentlyDenied is left as-is; it only changes via the launcher.
+                    status == LocationPermissionStatus.Granted -> LocationPermissionStatus.Denied
+                    else -> status
                 }
             },
         )

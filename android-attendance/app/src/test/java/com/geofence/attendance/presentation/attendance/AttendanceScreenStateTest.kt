@@ -61,4 +61,30 @@ class AttendanceScreenStateTest {
             ),
         )
     }
+
+    @Test
+    fun `permission revoked mid-session surfaces the request-permission flow even with a stale Granted status`() {
+        // Simulates the permission having been revoked via Settings while the
+        // app was backgrounded: permissionStatus hasn't been refreshed yet
+        // (still reports Granted), but the location call already failed with
+        // a real permission error.
+        assertEquals(
+            AttendanceScreenMode.RequestPermission,
+            resolveAttendanceScreenMode(
+                LocationPermissionStatus.Granted,
+                LocationAvailability.Unavailable.PermissionMissing,
+            ),
+        )
+    }
+
+    @Test
+    fun `denied permission status still takes priority over a PermissionMissing availability`() {
+        assertEquals(
+            AttendanceScreenMode.RequestPermission,
+            resolveAttendanceScreenMode(
+                LocationPermissionStatus.Denied,
+                LocationAvailability.Unavailable.PermissionMissing,
+            ),
+        )
+    }
 }

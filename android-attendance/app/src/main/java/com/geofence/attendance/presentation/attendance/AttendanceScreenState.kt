@@ -18,6 +18,11 @@ fun resolveAttendanceScreenMode(
 ): AttendanceScreenMode = when {
     permissionStatus == LocationPermissionStatus.PermanentlyDenied -> AttendanceScreenMode.PermissionSettingsRequired
     permissionStatus == LocationPermissionStatus.Denied -> AttendanceScreenMode.RequestPermission
+    // Covers the case where permissionStatus is still stale-Granted (not yet
+    // refreshed) but a location call has already surfaced a real permission
+    // failure - e.g. revoked via Settings while the app was backgrounded.
+    locationAvailability == LocationAvailability.Unavailable.PermissionMissing ->
+        AttendanceScreenMode.RequestPermission
     locationAvailability == LocationAvailability.Unavailable.LocationServicesDisabled ->
         AttendanceScreenMode.LocationServicesDisabled
     else -> AttendanceScreenMode.Content
