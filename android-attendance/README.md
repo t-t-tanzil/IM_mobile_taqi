@@ -1,0 +1,166 @@
+# Attendance — Geo-Fenced Attendance System (Native Android)
+
+Task 1 of the Senior App Developer Technical Assessment: a native Android app that lets a
+user set an office location once (via GPS) and then mark attendance only when they are
+physically within a 50-meter radius of that saved location, with a live distance readout.
+
+## Project Structure / Approach
+
+The app follows **Clean Architecture** in three layers, with **MVVM** on top and
+**Kotlin Flow / `StateFlow`** as the sole state-management mechanism (no LiveData, no
+callbacks leaking upward):
+
+```
+presentation/attendance/   AttendanceScreen (Compose) + AttendanceViewModel + pure UI-state types
+domain/                    model / repository interface / use cases — no Android imports at all
+data/                      DataStore-backed persistence + FusedLocationProviderClient adapter
+data/di/                   Hilt module wiring the above together
+```
+
+- **`AttendanceViewModel`** (the app's single state holder) combines two Flows —
+  `GetOfficeLocationUseCase()` (the saved office location) and a location-retry-driven
+  current-location stream — into one `LocationSnapshot`, and exposes a single
+  `StateFlow<AttendanceUiState>` that the Compose screen collects with
+  `collectAsStateWithLifecycle()`. There is no second source of truth for distance or
+  eligibility; both are recomputed reactively whenever either input Flow emits.
+- **Domain layer** (`GetCurrentLocationUseCase`, `SaveOfficeLocationUseCase`,
+  `GetOfficeLocationUseCase`, `CalculateDistanceUseCase`, `ValidateAttendanceLocationUseCase`)
+  is plain Kotlin — verified by inspection to contain zero `android.*` imports — so it is
+  testable without Robolectric or an emulator.
+- **`AttendanceRepositoryImpl`** is the only place that bridges domain interfaces to the two
+  data sources (`OfficeLocationDataStore`, `FusedLocationDataSource`).
+- **Hilt** (`@HiltAndroidApp`, `@AndroidEntryPoint`, `@HiltViewModel`, `DataModule`) wires
+  everything; `DataModule` binds `AttendanceRepository`/`LocationDataSource` to their
+  implementations and provides the single `FusedLocationProviderClient` singleton.
+
+### Key implementation details
+
+- **Distance calculation** — `CalculateDistanceUseCase` implements the **Haversine
+  formula** (great-circle distance, accounting for Earth's curvature) with
+  `EARTH_RADIUS_METERS = 6_371_000.0`, returning a `Float` in meters.
+- **50m geofence** — `ValidateAttendanceLocationUseCase.ALLOWED_RADIUS_METERS = 50f`;
+  the check is `distanceMeters <= ALLOWED_RADIUS_METERS` (inclusive boundary — exactly 50m
+  away is eligible). This boundary is swept by a dedicated test at 49/50/51m.
+- **Persistence** — `OfficeLocationDataStore` uses Jetpack **DataStore Preferences**. The
+  office latitude and longitude are written **atomically** in a single `edit {}` transform,
+  so there is no window where only one coordinate is persisted. Reads that hit an
+  `IOException` fall back to an empty preferences set instead of crashing; a location is only
+  considered "configured" once *both* keys are present.
+- **Fused Location Provider** — `FusedLocationDataSource` wraps
+  `FusedLocationProviderClient.requestLocationUpdates` in a `callbackFlow`, mapped through
+  domain exceptions (`LocationPermissionMissingException`,
+  `LocationServicesDisabledException`, `LocationUnavailableException`) rather than leaking
+  Play Services types upward. `awaitClose` always calls `removeLocationUpdates`, so there is
+  no listener leak across recompositions or `ViewModel` recreation.
+- **Transient GPS handling** — Play Services can briefly report
+  `isLocationAvailable = false` immediately after a fresh registration, before a fix has
+  actually arrived. Treating that as fatal immediately (the original implementation) made the
+  screen flash into a "location unavailable" state on essentially every launch — found via
+  **live emulator testing**, not by inspection. The fix is an 8-second grace period
+  (`UNAVAILABLE_GRACE_PERIOD_MS`): a short-lived coroutine `Job` that only closes the flow if
+  unavailability *persists* past that window, cancelled immediately if a real fix or a
+  "available again" callback arrives first.
+- **Permission handling** — `LocationPermissionState` (Compose-scoped) distinguishes three
+  states: `Denied` (system dialog can still be shown), `PermanentlyDenied` (user must open
+  Settings), and `Granted`. `resolveAttendanceScreenMode()` is a small **pure function**
+  (deliberately kept outside Compose so it's unit-testable on its own) that decides which of
+  four screens to show from `(permissionStatus, locationAvailability)`.
+- **Location-services-disabled handling** — detected independently of permission status via
+  `LocationManagerCompat.isLocationEnabled`, routed to its own "Open Location Settings" screen.
+- **Recovering from a permission revoked mid-session** — originally, `LocationPermissionState`
+  could only ever *upgrade* from `Denied` to `Granted` on resume; a permission revoked via
+  system Settings while the app was backgrounded left the UI on a stale `Granted` status with
+  no path back to the request screen. This was found during a self-audit pass and fixed:
+  `refresh()` now also downgrades `Granted → Denied` when the OS no longer reports the
+  permission as granted, and `resolveAttendanceScreenMode()` gained an explicit branch for
+  `LocationAvailability.Unavailable.PermissionMissing` so the screen routes back to the
+  request-permission card even before `refresh()` has run. Covered by two new tests in
+  `AttendanceScreenStateTest`.
+
+### Testing
+
+35 JVM unit tests, no emulator required (`./gradlew test`):
+
+| File | Focus |
+|---|---|
+| `CalculateDistanceUseCaseTest` | Haversine correctness |
+| `ValidateAttendanceLocationUseCaseTest` | 50m boundary, inclusive edge |
+| `AttendanceViewModelTest` | end-to-end ViewModel behavior: eligibility sweep (120/80/55/49/51m), office-location save success/failure, mark-attendance success/failure, distinct error classification (permission/services/temporary), retry-and-recover |
+| `AttendanceScreenStateTest` | pure screen-mode decision table, incl. the permission-revoked-mid-session branch |
+| `OfficeLocationDataStoreMappingTest` | preference-key mapping, missing-value handling |
+| `GetCurrentLocationUseCaseTest` | pass-through forwarding |
+
+## Generative AI Usage
+
+Generative AI was used as a development assistant for architecture exploration,
+implementation scaffolding, test generation, debugging, lifecycle analysis, and
+documentation. Generated suggestions and code were reviewed, adapted, tested, and manually
+verified — including live testing on an Android emulator, which is what actually surfaced the
+transient-GPS-unavailability bug described above (a static-analysis-only pass would not have
+caught it).
+
+The prompts below are **representative** of the kind of direction given throughout the
+engagement, not an exact transcript:
+
+- "Implement Task 1 only for now — a native Android geo-fenced attendance app using Kotlin,
+  Jetpack Compose, Clean Architecture + MVVM, Hilt, and DataStore. Don't implement GPS
+  behavior yet, just the persistence layer."
+- "Now implement the GPS data layer — wrap `FusedLocationProviderClient` behind a
+  `LocationDataSource` interface, expose it as a `Flow`, and map failures to distinct domain
+  exceptions rather than leaking Play Services types."
+- "Run the app on the emulator and actually test it, not just `flutter analyze`/build — I want
+  to know it really works, not just that it compiles."
+- "Do a final read-only code audit before we call Task 1 done — check for domain-layer
+  Android leakage, race conditions, and anything a careful reviewer would flag."
+- "Fix the permission-recovery issue where revoking location permission while the app is
+  backgrounded doesn't route the user back to the request screen — smallest clean fix
+  consistent with the existing architecture, plus tests."
+
+## How to Run
+
+**Requirements:** Android Studio (or the command line with a configured Android SDK),
+JDK 17, `minSdk 26` device/emulator (Android 8.0+).
+
+```bash
+git clone https://github.com/t-t-tanzil/IM_mobile_taqi.git
+cd IM_mobile_taqi/android-attendance
+./gradlew installDebug   # or open the folder directly in Android Studio and hit Run
+```
+
+To run the tests:
+
+```bash
+./gradlew test
+```
+
+To build a release APK locally (see "Release signing" below for what's needed to get a
+*signed* one — without it, this still succeeds and falls back to debug signing):
+
+```bash
+./gradlew :app:assembleRelease
+```
+
+### Release signing
+
+Release signing is intentionally **not** committed. `app/build.gradle.kts` looks for a
+`keystore.properties` file at the project root (gitignored, alongside the keystore it
+points at); if present, the `release` build type signs with it, otherwise it falls back to
+the debug signing config so the project stays buildable on a fresh clone. To produce a
+locally-signed release APK, create your own keystore and a `keystore.properties` next to
+`settings.gradle.kts`:
+
+```properties
+storeFile=keystore/release.jks
+storePassword=...
+keyAlias=...
+keyPassword=...
+```
+
+## Screenshots
+
+![Location permission request](screenshots/permission_request.png)
+
+*The above is a real capture from live device testing. The remaining app states — office
+setup, live distance tracking (both within and outside the 50m radius), and the
+attendance-marked success banner — are not yet captured here; add them to `screenshots/`
+and reference them from this section before final submission.*
