@@ -15,6 +15,7 @@ class ValidateAttendanceLocationUseCase @Inject constructor(
         officeLocation: OfficeLocation,
         currentLocation: LocationData,
     ): Boolean {
-        TODO("Implement radius validation in the next phase")
+        val distanceMeters = calculateDistanceUseCase(officeLocation, currentLocation)
+        return distanceMeters <= ALLOWED_RADIUS_METERS
     }
 }

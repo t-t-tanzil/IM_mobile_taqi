@@ -4,10 +4,13 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.location.Location
+import android.location.LocationManager
 import android.os.Looper
 import androidx.core.content.ContextCompat
+import androidx.core.location.LocationManagerCompat
 import com.geofence.attendance.domain.model.LocationData
 import com.geofence.attendance.domain.model.LocationPermissionMissingException
+import com.geofence.attendance.domain.model.LocationServicesDisabledException
 import com.geofence.attendance.domain.model.LocationUnavailableException
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationAvailability
@@ -32,6 +35,11 @@ class FusedLocationDataSource @Inject constructor(
     override fun observeLocationUpdates(): Flow<LocationData> = callbackFlow {
         if (!hasLocationPermission()) {
             close(LocationPermissionMissingException())
+            return@callbackFlow
+        }
+
+        if (!isLocationServicesEnabled()) {
+            close(LocationServicesDisabledException())
             return@callbackFlow
         }
 
@@ -65,6 +73,11 @@ class FusedLocationDataSource @Inject constructor(
             context,
             Manifest.permission.ACCESS_FINE_LOCATION,
         ) == PackageManager.PERMISSION_GRANTED
+
+    private fun isLocationServicesEnabled(): Boolean {
+        val locationManager = context.getSystemService(LocationManager::class.java) ?: return false
+        return LocationManagerCompat.isLocationEnabled(locationManager)
+    }
 
     private fun Location.toLocationData() = LocationData(
         latitude = latitude,
