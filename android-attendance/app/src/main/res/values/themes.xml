@@ -1,3 +1,5 @@
 <resources>
-    <style name="Theme.Attendance" parent="android:Theme.Material.Light.NoActionBar" />
+    <!-- Dark parent so the pre-Compose window background matches the forced-dark
+         Compose theme (avoids a light flash before AttendanceScreen draws). -->
+    <style name="Theme.Attendance" parent="android:Theme.Material.NoActionBar" />
 </resources>

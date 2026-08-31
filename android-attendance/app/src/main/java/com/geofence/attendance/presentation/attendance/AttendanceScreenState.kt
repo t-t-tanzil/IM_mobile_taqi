@@ -27,3 +27,14 @@ fun resolveAttendanceScreenMode(
         AttendanceScreenMode.LocationServicesDisabled
     else -> AttendanceScreenMode.Content
 }
+
+/**
+ * The circular distance gauge is a "how far out of range" indicator, not a "how close"
+ * one: progress increases as the user gets farther from the office, reaching full ring
+ * at [DISTANCE_GAUGE_MAX_METERS] and beyond. Kept pure and separate from the Composable
+ * so it's unit-testable without Compose in the loop.
+ */
+const val DISTANCE_GAUGE_MAX_METERS = 200f
+
+fun distanceGaugeProgress(distanceMeters: Float): Float =
+    (distanceMeters / DISTANCE_GAUGE_MAX_METERS).coerceIn(0f, 1f)

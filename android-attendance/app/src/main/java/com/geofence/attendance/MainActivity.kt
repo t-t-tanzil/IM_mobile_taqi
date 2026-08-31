@@ -12,7 +12,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            AttendanceTheme {
+            // Forced dark, regardless of system setting - the attendance screen's design
+            // is dark-first by explicit requirement, not adaptive to device theme.
+            AttendanceTheme(darkTheme = true) {
                 AttendanceScreen()
             }
         }
