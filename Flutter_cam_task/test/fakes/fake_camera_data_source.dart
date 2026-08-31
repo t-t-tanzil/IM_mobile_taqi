@@ -5,6 +5,7 @@ import 'package:camera_sync/domain/entities/normalized_focus_point.dart';
 
 class FakeCameraDataSource implements CameraDataSource {
   bool initializeCalled = false;
+  int switchCameraCallCount = 0;
   CapturedImage? imageToReturn;
   double? lastZoomLevel;
   NormalizedFocusPoint? lastFocusPoint;
@@ -16,6 +17,9 @@ class FakeCameraDataSource implements CameraDataSource {
   /// If set, thrown by [captureImage] instead of succeeding.
   Object? captureError;
 
+  /// If set, thrown by [switchCamera] instead of succeeding.
+  Object? switchCameraError;
+
   @override
   CameraController? get previewController => null;
 
@@ -23,6 +27,13 @@ class FakeCameraDataSource implements CameraDataSource {
   Future<void> initialize() async {
     initializeCalled = true;
     final error = initializeError;
+    if (error != null) throw error;
+  }
+
+  @override
+  Future<void> switchCamera() async {
+    switchCameraCallCount++;
+    final error = switchCameraError;
     if (error != null) throw error;
   }
 

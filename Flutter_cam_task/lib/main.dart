@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 
 import 'core/di/service_locator.dart';
-import 'presentation/camera/camera_preview_screen.dart';
+import 'presentation/splash/splash_screen.dart';
+import 'presentation/theme/app_theme.dart';
 import 'services/background_sync/background_sync_service.dart';
 
 Future<void> main() async {
@@ -20,11 +21,9 @@ class CameraSyncApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Camera Sync',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
-        useMaterial3: true,
-      ),
-      home: const CameraPreviewScreen(),
+      theme: AppTheme.dark,
+      darkTheme: AppTheme.dark,
+      home: const SplashScreen(),
     );
   }
 }

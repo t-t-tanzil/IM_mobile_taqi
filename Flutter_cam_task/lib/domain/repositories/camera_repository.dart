@@ -7,6 +7,10 @@ import '../entities/normalized_focus_point.dart';
 abstract interface class CameraRepository {
   Future<void> initializeCamera();
 
+  /// Switches between the back and front camera. A no-op if the device has
+  /// no second camera.
+  Future<void> switchCamera();
+
   Future<CapturedImage> captureImage();
 
   /// Clamped by the implementation to the hardware's supported range.

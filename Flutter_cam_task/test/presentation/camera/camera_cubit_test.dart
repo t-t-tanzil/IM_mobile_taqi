@@ -148,4 +148,61 @@ void main() {
     expect(cubit.state.captureErrorMessage, isNotNull);
     expect(cubit.state.isCapturing, isFalse);
   });
+
+  test('switchCamera flips isFrontCamera and re-applies the new zoom range', () async {
+    dataSource.zoomRange = (min: 1.0, max: 4.0);
+    await cubit.initializeCamera();
+    expect(cubit.state.isFrontCamera, isFalse);
+
+    dataSource.zoomRange = (min: 1.0, max: 1.0); // front cameras often can't zoom
+    await cubit.switchCamera();
+
+    expect(dataSource.switchCameraCallCount, 1);
+    expect(cubit.state.isFrontCamera, isTrue);
+    expect(cubit.state.minZoom, 1.0);
+    expect(cubit.state.maxZoom, 1.0);
+    expect(cubit.state.zoomLevel, 1.0);
+  });
+
+  test('switchCamera back to the rear camera flips isFrontCamera again', () async {
+    await cubit.initializeCamera();
+    await cubit.switchCamera();
+    expect(cubit.state.isFrontCamera, isTrue);
+
+    await cubit.switchCamera();
+
+    expect(dataSource.switchCameraCallCount, 2);
+    expect(cubit.state.isFrontCamera, isFalse);
+  });
+
+  test('switchCamera preserves the current in-memory batch', () async {
+    await cubit.initializeCamera();
+    dataSource.imageToReturn = CapturedImage(
+      id: '1',
+      localFilePath: '/tmp/1.jpg',
+      capturedAt: DateTime(2024, 1, 1),
+    );
+    await cubit.captureImage();
+    expect(cubit.state.batchImages, hasLength(1));
+
+    await cubit.switchCamera();
+
+    expect(cubit.state.batchImages, hasLength(1));
+  });
+
+  test('switchCamera is ignored before the camera is ready', () async {
+    await cubit.switchCamera();
+
+    expect(dataSource.switchCameraCallCount, 0);
+  });
+
+  test('a failed switchCamera surfaces an error without crashing', () async {
+    await cubit.initializeCamera();
+    dataSource.switchCameraError = Exception('no second camera');
+
+    await cubit.switchCamera();
+
+    expect(cubit.state.errorMessage, isNotNull);
+    expect(cubit.state.status, CameraStatus.ready);
+  });
 }

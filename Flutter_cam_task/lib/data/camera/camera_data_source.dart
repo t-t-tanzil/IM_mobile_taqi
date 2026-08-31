@@ -6,6 +6,11 @@ import '../../domain/entities/normalized_focus_point.dart';
 abstract interface class CameraDataSource {
   Future<void> initialize();
 
+  /// Switches between the back and front camera, re-initializing the
+  /// controller on the newly-selected lens. A no-op if the device has no
+  /// second camera to switch to.
+  Future<void> switchCamera();
+
   Future<CapturedImage> captureImage();
 
   Future<void> setZoomLevel(double zoomLevel);

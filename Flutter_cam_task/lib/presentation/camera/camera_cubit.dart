@@ -18,12 +18,14 @@ const _focusIndicatorDuration = Duration(milliseconds: 1500);
 /// or any other plugin type directly. Must not contain upload-queue logic -
 /// see UploadCubit for that.
 class CameraCubit extends Cubit<CameraState> {
-  CameraCubit(this._cameraRepository, this._captureImage) : super(const CameraState());
+  CameraCubit(this._cameraRepository, this._captureImage)
+    : super(const CameraState());
 
   final CameraRepository _cameraRepository;
   final CaptureImage _captureImage;
 
   bool _isInitializing = false;
+  bool _isSwitchingCamera = false;
   Timer? _focusIndicatorTimer;
 
   /// Safe to call repeatedly (e.g. on app resume) - re-entrant calls while
@@ -43,12 +45,20 @@ class CameraCubit extends Cubit<CameraState> {
           minZoom: range.min,
           maxZoom: range.max,
           zoomLevel: range.min,
-          availableZoomLevels: buildZoomButtonValues(minZoom: range.min, maxZoom: range.max),
+          availableZoomLevels: buildZoomButtonValues(
+            minZoom: range.min,
+            maxZoom: range.max,
+          ),
           errorMessage: null,
         ),
       );
     } on CameraFailure catch (failure) {
-      emit(state.copyWith(status: _statusForFailure(failure), errorMessage: failure.message));
+      emit(
+        state.copyWith(
+          status: _statusForFailure(failure),
+          errorMessage: failure.message,
+        ),
+      );
     } catch (_) {
       emit(
         state.copyWith(
@@ -58,6 +68,47 @@ class CameraCubit extends Cubit<CameraState> {
       );
     } finally {
       _isInitializing = false;
+    }
+  }
+
+  /// Toggles between the back and front camera. Keeps the current in-memory
+  /// batch untouched - already-captured photos don't depend on which lens
+  /// is active. Re-fetches the zoom range afterward, since front and back
+  /// cameras commonly support different ranges.
+  Future<void> switchCamera() async {
+    if (state.status != CameraStatus.ready || _isSwitchingCamera) return;
+    _isSwitchingCamera = true;
+    // Drop to the loading view first, before the repository call disposes
+    // the current controller - the CameraPreview widget must be unmounted
+    // ahead of disposal, or it keeps rendering frames from a controller
+    // that's being torn out from under it and crashes.
+    emit(state.copyWith(status: CameraStatus.initializing, errorMessage: null));
+    try {
+      await _cameraRepository.switchCamera();
+      final range = await _cameraRepository.getZoomRange();
+      emit(
+        state.copyWith(
+          status: CameraStatus.ready,
+          isFrontCamera: !state.isFrontCamera,
+          minZoom: range.min,
+          maxZoom: range.max,
+          zoomLevel: range.min,
+          availableZoomLevels: buildZoomButtonValues(
+            minZoom: range.min,
+            maxZoom: range.max,
+          ),
+          errorMessage: null,
+        ),
+      );
+    } catch (_) {
+      emit(
+        state.copyWith(
+          status: CameraStatus.ready,
+          errorMessage: 'Unable to switch camera',
+        ),
+      );
+    } finally {
+      _isSwitchingCamera = false;
     }
   }
 
@@ -90,7 +141,9 @@ class CameraCubit extends Cubit<CameraState> {
     emit(state.copyWith(zoomLevel: clamped));
     _cameraRepository.setZoomLevel(clamped).catchError((_) {
       if (!isClosed) {
-        emit(state.copyWith(errorMessage: 'Zoom is not supported on this device'));
+        emit(
+          state.copyWith(errorMessage: 'Zoom is not supported on this device'),
+        );
       }
     });
   }
@@ -100,7 +153,9 @@ class CameraCubit extends Cubit<CameraState> {
     emit(state.copyWith(focusIndicatorPosition: uiPosition));
     _cameraRepository.setFocusPoint(point).catchError((_) {
       if (!isClosed) {
-        emit(state.copyWith(errorMessage: 'Focus is not supported on this device'));
+        emit(
+          state.copyWith(errorMessage: 'Focus is not supported on this device'),
+        );
       }
     });
 
@@ -125,9 +180,19 @@ class CameraCubit extends Cubit<CameraState> {
         ),
       );
     } on CameraFailure catch (failure) {
-      emit(state.copyWith(isCapturing: false, captureErrorMessage: failure.message));
+      emit(
+        state.copyWith(
+          isCapturing: false,
+          captureErrorMessage: failure.message,
+        ),
+      );
     } catch (_) {
-      emit(state.copyWith(isCapturing: false, captureErrorMessage: 'Failed to capture image'));
+      emit(
+        state.copyWith(
+          isCapturing: false,
+          captureErrorMessage: 'Failed to capture image',
+        ),
+      );
     }
   }
 

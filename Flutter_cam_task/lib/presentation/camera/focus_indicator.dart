@@ -1,15 +1,16 @@
 import 'package:flutter/material.dart';
 
+import '../theme/app_theme.dart';
+
 /// Renders the focus-ring visual at a given position within an ancestor
 /// Stack. Tap handling, automatic dismissal after a brief delay, and
-/// wiring to an actual camera focus request are implemented in the next
-/// phase.
+/// wiring to an actual camera focus request live in CameraCubit.
 class FocusIndicator extends StatelessWidget {
   const FocusIndicator({super.key, required this.position});
 
   final Offset position;
 
-  static const double _size = 40;
+  static const double _size = 44;
 
   @override
   Widget build(BuildContext context) {
@@ -22,7 +23,7 @@ class FocusIndicator extends StatelessWidget {
           height: _size,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            border: Border.all(color: Colors.white, width: 1.5),
+            border: Border.all(color: AppColors.blue, width: 2),
           ),
         ),
       ),

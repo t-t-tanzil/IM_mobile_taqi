@@ -36,6 +36,7 @@ class CameraState extends Equatable {
     this.minZoom = 1.0,
     this.maxZoom = 1.0,
     this.availableZoomLevels = const [1.0],
+    this.isFrontCamera = false,
     this.focusIndicatorPosition,
     this.batchImages = const [],
     this.isCapturing = false,
@@ -48,6 +49,7 @@ class CameraState extends Equatable {
   final double minZoom;
   final double maxZoom;
   final List<double> availableZoomLevels;
+  final bool isFrontCamera;
 
   /// Null when the focus indicator is hidden.
   final Offset? focusIndicatorPosition;
@@ -64,6 +66,7 @@ class CameraState extends Equatable {
     double? minZoom,
     double? maxZoom,
     List<double>? availableZoomLevels,
+    bool? isFrontCamera,
     Object? focusIndicatorPosition = _unset,
     List<CapturedImage>? batchImages,
     bool? isCapturing,
@@ -76,6 +79,7 @@ class CameraState extends Equatable {
       minZoom: minZoom ?? this.minZoom,
       maxZoom: maxZoom ?? this.maxZoom,
       availableZoomLevels: availableZoomLevels ?? this.availableZoomLevels,
+      isFrontCamera: isFrontCamera ?? this.isFrontCamera,
       focusIndicatorPosition: identical(focusIndicatorPosition, _unset)
           ? this.focusIndicatorPosition
           : focusIndicatorPosition as Offset?,
@@ -95,6 +99,7 @@ class CameraState extends Equatable {
         minZoom,
         maxZoom,
         availableZoomLevels,
+        isFrontCamera,
         focusIndicatorPosition,
         batchImages,
         isCapturing,

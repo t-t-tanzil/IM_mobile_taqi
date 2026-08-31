@@ -14,6 +14,9 @@ class CameraRepositoryImpl implements CameraRepository {
   Future<void> initializeCamera() => _dataSource.initialize();
 
   @override
+  Future<void> switchCamera() => _dataSource.switchCamera();
+
+  @override
   Future<CapturedImage> captureImage() => _dataSource.captureImage();
 
   @override

@@ -20,12 +20,30 @@ import 'camera_data_source.dart';
 /// actual request/settings UX belongs to the presentation layer.
 class FlutterCameraDataSource implements CameraDataSource {
   CameraController? _controller;
+  CameraLensDirection _lensDirection = CameraLensDirection.back;
 
   @override
   CameraController? get previewController => _controller;
 
   @override
-  Future<void> initialize() async {
+  Future<void> initialize() => _initializeWithLens(_lensDirection);
+
+  @override
+  Future<void> switchCamera() async {
+    final cameras = await availableCameras();
+    final target = _lensDirection == CameraLensDirection.back
+        ? CameraLensDirection.front
+        : CameraLensDirection.back;
+    final hasTarget = cameras.any((description) => description.lensDirection == target);
+    if (!hasTarget) {
+      // No second camera to switch to - leave the current one running.
+      return;
+    }
+    _lensDirection = target;
+    await _initializeWithLens(target);
+  }
+
+  Future<void> _initializeWithLens(CameraLensDirection lensDirection) async {
     final permissionStatus = await Permission.camera.status;
     if (!permissionStatus.isGranted) {
       throw const CameraPermissionDenied();
@@ -37,7 +55,7 @@ class FlutterCameraDataSource implements CameraDataSource {
     }
 
     final camera = cameras.firstWhere(
-      (description) => description.lensDirection == CameraLensDirection.back,
+      (description) => description.lensDirection == lensDirection,
       orElse: () => cameras.first,
     );
 
