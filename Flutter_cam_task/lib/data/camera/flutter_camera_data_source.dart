@@ -34,7 +34,9 @@ class FlutterCameraDataSource implements CameraDataSource {
     final target = _lensDirection == CameraLensDirection.back
         ? CameraLensDirection.front
         : CameraLensDirection.back;
-    final hasTarget = cameras.any((description) => description.lensDirection == target);
+    final hasTarget = cameras.any(
+      (description) => description.lensDirection == target,
+    );
     if (!hasTarget) {
       // No second camera to switch to - leave the current one running.
       return;
@@ -59,6 +61,18 @@ class FlutterCameraDataSource implements CameraDataSource {
       orElse: () => cameras.first,
     );
 
+    // Tear down any previous session before opening a new one. iOS
+    // (AVFoundation) does not tolerate two concurrent CameraController
+    // sessions the way Android does - switching lenses twice in a row
+    // (there and back) with the old session still alive while the new one
+    // starts up is a real crash on a physical iPhone. The presentation
+    // layer already drops to a loading state before calling this, so there
+    // is never a live CameraPreview widget pointed at the controller being
+    // disposed here.
+    final previous = _controller;
+    _controller = null;
+    await previous?.dispose();
+
     final controller = CameraController(
       camera,
       ResolutionPreset.high,
@@ -72,11 +86,7 @@ class FlutterCameraDataSource implements CameraDataSource {
       throw _mapInitializationException(exception);
     }
 
-    // Replace any previous controller only after the new one succeeds, and
-    // dispose the old one so we never leak or hold two open controllers.
-    final previous = _controller;
     _controller = controller;
-    await previous?.dispose();
   }
 
   CameraFailure _mapInitializationException(CameraException exception) {
@@ -111,7 +121,11 @@ class FlutterCameraDataSource implements CameraDataSource {
       final savedPath = '${directory.path}/$id.jpg';
       await File(file.path).copy(savedPath);
 
-      return CapturedImage(id: id, localFilePath: savedPath, capturedAt: DateTime.now());
+      return CapturedImage(
+        id: id,
+        localFilePath: savedPath,
+        capturedAt: DateTime.now(),
+      );
     } on FileSystemException {
       throw const CaptureStorageFailure();
     }

@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:workmanager/workmanager.dart';
 
 import '../../core/constants/app_constants.dart';
@@ -7,6 +9,14 @@ import 'background_sync_service.dart';
 /// Thin wrapper around the `workmanager` plugin - registration only. The
 /// actual sync algorithm lives in [SyncEngine] and is invoked from
 /// [callbackDispatcher]; nothing here duplicates it.
+///
+/// Android-only. The `workmanager_apple` (iOS) plugin submits a
+/// `BGTaskScheduler` request before registering its launch handler, which
+/// iOS rejects outright - a guaranteed crash on first launch, confirmed on
+/// the iOS Simulator. Until that's fixed upstream, every method here is a
+/// no-op off Android, so the rest of the app (camera, capture, the
+/// persistent queue, and every foreground sync trigger) keeps working on
+/// iOS; only the periodic background safety net is unavailable there.
 class WorkManagerBackgroundSyncService implements BackgroundSyncService {
   const WorkManagerBackgroundSyncService();
 
@@ -20,11 +30,13 @@ class WorkManagerBackgroundSyncService implements BackgroundSyncService {
 
   @override
   Future<void> initialize() {
+    if (!Platform.isAndroid) return Future.value();
     return Workmanager().initialize(callbackDispatcher);
   }
 
   @override
   Future<void> schedulePeriodicSync() {
+    if (!Platform.isAndroid) return Future.value();
     return Workmanager().registerPeriodicTask(
       AppConstants.backgroundSyncUniqueWorkName,
       AppConstants.backgroundSyncTaskName,
@@ -38,6 +50,9 @@ class WorkManagerBackgroundSyncService implements BackgroundSyncService {
 
   @override
   Future<void> cancelScheduledSync() {
-    return Workmanager().cancelByUniqueName(AppConstants.backgroundSyncUniqueWorkName);
+    if (!Platform.isAndroid) return Future.value();
+    return Workmanager().cancelByUniqueName(
+      AppConstants.backgroundSyncUniqueWorkName,
+    );
   }
 }
