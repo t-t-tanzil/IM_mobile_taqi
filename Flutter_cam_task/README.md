@@ -660,10 +660,17 @@ using a combination of a physical Pixel 7 and the `Pixel_9_Pro` Android emulator
 
 ## iOS
 
-Foreground functionality was also verified on the iOS Simulator.
+Foreground functionality was verified on both the iOS Simulator and a physical iPhone 14 Pro.
 
-The simulator does not provide real camera hardware, so real camera capture could not be
-verified there.
+The Simulator does not provide real camera hardware, so real camera preview and camera
+switching were verified on the physical device instead.
+
+That physical-device pass surfaced a real, iOS-specific crash: switching the camera lens
+twice in a row (front → back → front) crashed the app, because the outgoing
+`CameraController`/`AVCaptureSession` was still alive while the next one was already being
+initialized. iOS (AVFoundation) does not tolerate two concurrent capture sessions the way
+Android's CameraX does. The fix now disposes the outgoing controller before creating the new
+one; the same rotate-then-back sequence was confirmed working afterward on the same device.
 
 Background synchronization is intentionally disabled on iOS because the
 `workmanager_apple` implementation used by the project crashes during launch due to
@@ -766,8 +773,24 @@ The simulator also exposed and allowed fixing:
 - iOS deployment-target incompatibility with the WorkManager package
 - `BGTaskScheduler` launch-time crash caused by the iOS WorkManager plugin
 
-Real camera capture and the complete upload flow were not tested on iOS because the simulator
-does not provide physical camera hardware.
+The complete upload flow (capture → queue → sync) was not separately exercised end-to-end on
+iOS, since the Simulator has no camera and the physical-device pass focused on the camera
+crash below.
+
+### Physical iPhone 14 Pro
+
+Verified live, over both a wireless and a USB debug connection:
+
+- App install and launch
+- Real camera preview
+- Front/back camera switching
+
+This is where the AVFoundation camera-switch crash described in **Platform Behavior** above
+was actually found: switching the camera lens twice in a row crashed the app on real
+hardware. The crash log's symbolicated backtrace pointed directly at `AVFoundation`, which is
+what led to the fix (disposing the outgoing `CameraController` before creating the new one).
+The fix was rebuilt and reinstalled on the same physical device, and the same rotate-then-back
+sequence was confirmed working afterward.
 
 ---
 
@@ -983,10 +1006,12 @@ or request idempotency.
 
 ### 5. iOS camera testing
 
-Camera capture was not exercised on a physical iOS device.
+Camera preview and front/back camera switching were exercised on a physical iPhone 14 Pro,
+where a real AVFoundation crash was found and fixed (see **Live Verification**). The complete
+capture → queue → sync flow was not separately exercised end-to-end on iOS.
 
-The iOS verification was performed using the iPhone 17 Simulator, which has no real camera
-hardware.
+The iOS Simulator (iPhone 17) has no real camera hardware, so it was used only for the
+non-camera parts of the app (splash, permission flow, Upload Manager, connectivity).
 
 ### 6. Static screenshot limitations
 
@@ -1025,7 +1050,8 @@ Representative engineering directions included:
 - Keeping platform-specific camera and connectivity implementations behind interfaces.
 - Avoiding `get_it`, UI state and Cubits inside the WorkManager background isolate.
 - Verifying WorkManager execution using real Android `adb logcat` evidence.
-- Testing camera switching on physical Android hardware.
+- Testing camera switching on physical Android and iOS hardware, which is what surfaced and
+  led to fixing a real AVFoundation crash on the physical iPhone.
 - Running the application on iOS Simulator instead of assuming iOS compatibility.
 - Investigating and fixing the iOS `BGTaskScheduler` crash discovered during live execution.
 - Testing process-death and full-device-reboot persistence rather than relying solely on unit
