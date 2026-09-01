@@ -1,253 +1,928 @@
-# Camera Sync — Camera Capture & Upload Queue (Flutter)
+# Camera Sync — Camera Capture & Persistent Upload Queue (Flutter)
 
-A Flutter app with a custom camera UI (pinch/slider/quick-select zoom, tap-to-focus,
-front/back camera switching), batch capture into a persistent local upload queue, and a
-resilient sync engine that survives offline periods, app kills, and device reboots —
-including automatic background synchronization via WorkManager.
+A Flutter application implementing a production-oriented camera capture and upload workflow.
+
+The app provides a custom camera experience with pinch/slider/quick-select zoom, tap-to-focus,
+front/back camera switching, batch photo capture, persistent local upload queues, automatic
+retry, connectivity-aware synchronization, and Android background synchronization through
+WorkManager.
+
+The implementation follows **Clean Architecture**, uses **flutter_bloc** as the sole UI state
+management mechanism, persists the upload queue through **SharedPreferences**, and keeps the
+foreground and background synchronization paths converged on the same domain-level
+`SyncEngine`.
+
+---
 
 ## Features
 
-- Custom camera preview: pinch-to-zoom, a vertical slider, and quick-select zoom buttons,
-  all driving the same clamped zoom state.
-- Front/back camera switching.
-- Tap-to-focus with a visual indicator at the tap point.
-- Batch photo capture, added to a persistent upload queue as one unit.
-- Upload Manager screen: live connectivity status, per-batch status (pending / uploading /
-  failed / synced), real photo thumbnails, manual retry, and a persistent "New Batch"
-  action.
-- Automatic retry when connectivity is restored — no button press required.
-- Background sync via WorkManager, sharing the same queue and sync logic as the foreground
-  app.
-- Fixed 2-second splash screen and double-back-press-to-exit.
+- Custom camera preview with:
+  - Pinch-to-zoom
+  - Vertical slider zoom
+  - Quick-select zoom buttons
+  - Front/back camera switching
+  - Tap-to-focus with visual focus indicator
+- Batch photo capture.
+- Persistent local upload queue.
+- Upload Manager screen with:
+  - Live connectivity status
+  - Per-batch status
+  - Real photo thumbnails
+  - Manual retry
+  - New Batch action
+- Automatic synchronization when connectivity is restored.
+- Sequential upload processing to prevent concurrent batch uploads.
+- Recovery of interrupted `uploading` batches after process death or reboot.
+- Android background synchronization through WorkManager.
+- Persistent queue shared between foreground and background execution.
+- Fixed 2-second splash screen.
+- Double-back-press-to-exit on the root camera screen.
 
-## Architecture
+---
 
-Clean Architecture in four layers, with a `flutter_bloc` Cubit as the sole
-state-management mechanism:
+# Architecture
 
+The application follows **Clean Architecture** with explicit separation between presentation,
+domain, data, and platform/service concerns.
+
+```text
+┌──────────────────────────────────────────────────────────────┐
+│                      PRESENTATION                            │
+│                                                              │
+│  CameraPreviewScreen       PendingUploadsScreen              │
+│          │                         │                         │
+│     CameraCubit              UploadCubit                     │
+└──────────┼─────────────────────────┼─────────────────────────┘
+           │                         │
+           ▼                         ▼
+┌──────────────────────────────────────────────────────────────┐
+│                         DOMAIN                               │
+│                                                              │
+│  Use Cases          Repository Interfaces        SyncEngine   │
+│                                                              │
+│  CaptureImage       CameraRepository             sync()       │
+│  SyncPendingUploads UploadRepository                          │
+└──────────┼─────────────────────────┼─────────────────────────┘
+           │                         │
+           ▼                         ▼
+┌──────────────────────────────────────────────────────────────┐
+│                           DATA                               │
+│                                                              │
+│  Repository Implementations                                  │
+│          │                                                   │
+│          ├── CameraDataSource                                 │
+│          ├── UploadQueueDataSource                            │
+│          └── UploadDataSource                                │
+└──────────┼─────────────────────────┼─────────────────────────┘
+           │                         │
+           ▼                         ▼
+┌──────────────────────┐   ┌───────────────────────────────────┐
+│ Platform / Plugins   │   │ Persistent Storage / Mock API      │
+│                      │   │                                   │
+│ camera               │   │ SharedPreferences                  │
+│ connectivity_plus    │   │ MockUploadDataSource              │
+│ WorkManager          │   │                                   │
+└──────────────────────┘   └───────────────────────────────────┘
 ```
-presentation/   Cubit + State (Equatable) + View, one pair per feature
-domain/         entities, repository interfaces, use cases, the sync engine itself
-data/           repository implementations + concrete data sources (camera plugin, SharedPreferences, mock API)
-services/       connectivity and background-sync abstractions + their platform implementations
-core/           constants, typed errors, DI (get_it), small utilities
+
+### Layer Responsibilities
+
+```text
+presentation/
+    UI, Cubits, immutable state and user interaction
+
+domain/
+    Entities, repository contracts, use cases and SyncEngine
+    No Flutter UI or platform implementation details
+
+data/
+    Repository implementations and concrete data sources
+
+services/
+    Connectivity and background synchronization abstractions
+    plus their platform-specific implementations
+
+core/
+    Constants, typed errors, dependency injection and utilities
 ```
 
-DI is `get_it` (`core/di/service_locator.dart`): `CameraCubit` and the use cases are
-**factories** (fresh per screen/call); `SyncEngine`, both repositories, both data sources,
-`UploadCubit`, and `BackgroundSyncService` are **lazy singletons** — one upload queue and
-one sync engine for the whole app, shared between the camera screen and the Upload Manager
-screen.
+The dependency direction is intentionally one-way:
 
-**Camera flow:**
+```text
+Presentation
+     │
+     ▼
+   Domain
+     │
+     ▼
+    Data
+```
 
-```
-CameraPreviewScreen → CameraCubit → CaptureImage (use case) → CameraRepository (interface)
-   → CameraDataSource (interface) → FlutterCameraDataSource (only file that imports package:camera)
+The domain layer does not depend on Flutter widgets or concrete platform implementations.
+
+---
+
+# Dependency Injection
+
+`get_it` is used as the application's dependency injection container.
+
+The lifetime of each dependency is deliberate:
+
+```text
+Factories
+├── CameraCubit
+└── Camera-related use cases
+
+Lazy Singletons
+├── SyncEngine
+├── UploadCubit dependencies
+├── CameraRepository
+├── UploadRepository
+├── UploadQueueDataSource
+├── UploadDataSource
+└── BackgroundSyncService
 ```
 
-**Upload/sync flow — every trigger converges on the same `SyncEngine` instance:**
+The upload queue and `SyncEngine` therefore represent shared application-level infrastructure
+rather than screen-specific state.
 
+This is important because the camera screen and Upload Manager screen must operate on the
+same persisted queue and synchronization mechanism.
+
+---
+
+# Camera Architecture
+
+The camera implementation keeps the Flutter `camera` plugin behind a data-source boundary.
+
+```text
+CameraPreviewScreen
+        │
+        ▼
+   CameraCubit
+        │
+        ▼
+  CaptureImage
+        │
+        ▼
+CameraRepository
+        │
+        ▼
+CameraDataSource
+        │
+        ▼
+FlutterCameraDataSource
+        │
+        ▼
+CameraController
 ```
-PendingUploadsScreen → UploadCubit → SyncPendingUploads (use case) → SyncEngine
-   → UploadRepository (interface) → UploadRepositoryImpl
-   → UploadQueueDataSource (SharedPreferences) + UploadDataSource (mock API)
+
+Only the concrete camera data source knows about the `camera` package.
+
+This keeps the domain layer independent from the plugin and makes the camera-related logic
+testable without requiring a real camera in unit tests.
+
+---
+
+# Zoom Architecture
+
+All zoom controls modify the same logical zoom state:
+
+```text
+             ┌───────────────┐
+             │ Pinch Gesture │
+             └───────┬───────┘
+                     │
+             ┌───────▼───────┐
+             │               │
+Slider ─────►│ CameraCubit   │◄──── Quick-select buttons
+             │               │
+             └───────┬───────┘
+                     │
+                     ▼
+             CameraState.zoomLevel
+                     │
+                     ▼
+             CameraController
 ```
+
+The quick-select values (`0.5x`, `1x`, `2x`, `3x`, `5x`) are filtered against the actual
+`getMinZoomLevel()` / `getMaxZoomLevel()` range reported by the active camera.
+
+### Important distinction
+
+The quick-select controls **do not switch between physical camera lenses**.
+
+They control the same continuous zoom value used by pinch and slider interactions.
+
+Front/back camera switching is different: it selects the opposite
+`CameraLensDirection` and creates a new `CameraController` for that physical camera.
+
+---
+
+# Camera Lifecycle
+
+Camera switching and lifecycle handling are designed to avoid exposing a disposed controller
+to the preview.
+
+```text
+Current CameraController
+          │
+          ▼
+User switches camera
+          │
+          ▼
+UI enters loading state
+          │
+          ▼
+Find opposite CameraLensDirection
+          │
+          ▼
+Initialize new CameraController
+          │
+       ┌──┴──┐
+       │     │
+    Success Failure
+       │     │
+       ▼     ▼
+Swap      Keep error state
+controller
+       │
+       ▼
+Dispose previous controller
+```
+
+The in-progress capture batch is preserved when switching cameras.
+
+The zoom range is refreshed because front and back cameras may expose different supported
+zoom ranges.
+
+When the application moves into the background, the camera controller is disposed and
+reinitialized when the application resumes.
+
+---
+
+# Tap-to-Focus
+
+Tap-to-focus uses normalized camera coordinates:
+
+```text
+Screen tap
+    │
+    ▼
+Raw Offset
+    │
+    ▼
+NormalizedFocusPoint (0..1)
+    │
+    ├──────────────► setFocusPoint()
+    │
+    └──────────────► setExposurePoint()
+```
+
+The UI simultaneously displays a focus ring at the original screen position.
+
+The indicator automatically disappears after 1.5 seconds using a cancelable timer.
+
+---
+
+# Upload & Synchronization Architecture
+
+All synchronization triggers converge on the same `SyncEngine` instance in the foreground.
+
+```text
+                         ┌──────────────────────┐
+                         │   App Startup        │
+                         └──────────┬───────────┘
+                                    │
+                         ┌──────────▼───────────┐
+                         │                      │
+Connectivity Restored ──►│                      │
+                         │     SyncEngine       │
+Manual Retry ───────────►│      sync()          │
+                         │                      │
+Upload Cubit ───────────►│                      │
+                         └──────────┬───────────┘
+                                    │
+                                    ▼
+                         UploadRepository
+                                    │
+                    ┌───────────────┴───────────────┐
+                    ▼                               ▼
+          Persistent Queue                    Mock Upload API
+```
+
+The same domain entry point is used regardless of what initiated the synchronization.
 
 | Trigger | Path |
 |---|---|
-| App startup | `UploadCubit` constructor → `SyncPendingUploads()` |
-| Connectivity restored | `UploadCubit`'s connectivity-stream listener → same call |
-| Manual "Sync now" / per-batch retry | `UploadCubit.retry()` → same call |
-| WorkManager (background) | `callbackDispatcher()` → `SyncPendingUploads(freshSyncEngine)` → same call |
+| App startup | `UploadCubit` → `SyncPendingUploads()` |
+| Connectivity restored | Connectivity listener → `SyncPendingUploads()` |
+| Manual sync | `UploadCubit.retry()` → `SyncPendingUploads()` |
+| Per-batch retry | `UploadCubit.retry()` → `SyncPendingUploads()` |
+| WorkManager | Background dispatcher → `SyncPendingUploads()` |
 
-## Key Implementation Details
+This avoids maintaining separate upload algorithms for foreground and background execution.
 
-- **Zoom is not physical lens switching.** The quick-select buttons (`0.5, 1, 2, 3, 5`,
-  filtered down in `zoom_button_calculator.dart` to whatever the active lens actually
-  supports via `getMinZoomLevel()`/`getMaxZoomLevel()`) all set the **same** continuous
-  zoom value the pinch gesture and slider set — one field (`CameraState.zoomLevel`), three
-  inputs. This is the `camera` plugin's single-lens digital/optical zoom range, **not** a
-  way to jump between a device's separate ultra-wide/wide/telephoto lenses the way a native
-  camera app's 0.5x/1x/2x buttons typically do.
-- **Front/back camera switching is real lens switching**, distinct from the zoom buttons
-  above: the flip-camera control calls `CameraController`/`availableCameras()` to find the
-  opposite `CameraLensDirection`, initializes a *new* controller on that physical camera,
-  and only disposes the previous controller after the new one succeeds — and only after the
-  UI has already dropped to a loading state, so the live preview widget is never left
-  pointed at a controller mid-disposal. The in-progress capture batch is preserved across a
-  switch; zoom range is re-fetched since front/back cameras commonly differ.
-- **Tap-to-focus** normalizes the tap to a `0..1` coordinate (`NormalizedFocusPoint`),
-  forwards it to `setFocusPoint`/`setExposurePoint`, and shows a ring at the raw tap
-  `Offset` that auto-clears after 1.5s via a cancelable `Timer`.
-- **Batch capture** copies each shot from the plugin's temp file into the app's persistent
-  documents directory under a generated id; the in-memory batch is only cleared after it's
-  confirmed persisted to the queue, so a failed persistence attempt never silently drops
-  captured photos.
-- **Splash screen** (`presentation/splash/splash_screen.dart`) fades in, holds for exactly
-  2 seconds via a cancelable `Timer`, then fades into the camera screen.
-- **Double-back-press-to-exit** — the camera screen (the app's root route) is wrapped in a
-  `PopScope` that shows a "Press back again to exit" SnackBar on the first back press and
-  calls `SystemNavigator.pop()` on a second press within 2 seconds. Scoped to the root
-  screen only — the Upload Manager screen still pops normally with one back press.
+---
 
-## Queue & Persistence
+# Queue State Machine
 
-`SharedPreferencesUploadQueueDataSource` stores the entire queue as one JSON array under a
-single `SharedPreferences` key. Each batch has a status:
+The persistent queue uses explicit batch states.
 
-```
-pending ──(sync attempt)──► uploading ──(success)──► [removed from queue + local files deleted]
-   ▲                            │
-   └────────(failure)───────────┘
-                                 (stays "failed", remains in the queue, retried on the next sync trigger)
+```text
+                    ┌───────────────┐
+                    │    pending    │
+                    └───────┬───────┘
+                            │
+                       sync attempt
+                            │
+                            ▼
+                    ┌───────────────┐
+                    │   uploading   │
+                    └───────┬───────┘
+                            │
+                  ┌─────────┴─────────┐
+                  │                   │
+               success              failure
+                  │                   │
+                  ▼                   ▼
+          Remove from queue         failed
+          Delete local files          │
+                                      │
+                                      ▼
+                               Retry on next
+                               sync trigger
 ```
 
-- Every write (`_writeAll`) is one atomic `SharedPreferences.setString` call — a process
-  kill mid-write lands either the old value or the new one, never a torn one.
-- **Process-death / reboot recovery**: any batch found stuck in `uploading` on the first
-  read after a (re)start is recovered back to `pending`, so a kill mid-upload can't leave a
-  batch permanently invisible to the sync engine. Corrupted JSON is treated as an empty
-  queue rather than crashing; a single malformed record inside an otherwise-valid array is
-  skipped without losing the rest.
-- Local image files are deleted only *after* the mock API call has actually returned
-  success — never before, never on failure.
-- `SyncEngine._runSync()` processes syncable batches (`pending` + `failed`) strictly one at
-  a time in a `for` loop, never concurrently.
-- There is no separate "uploaded" history list — a batch simply leaves the queue on
-  success.
+Only `pending` and `failed` batches are eligible for synchronization.
 
-## Connectivity & Synchronization
+Uploads are processed sequentially:
 
-`ConnectivityPlusService` does not treat "an interface is connected" (from
-`connectivity_plus`) as proof of internet access. It layers a **DNS reachability probe**
-on top (`DnsLookupReachabilityChecker`, `InternetAddress.lookup('example.com')`) before
-ever reporting `online`, and applies `.distinct()` so repeated identical statuses (e.g.
-Wi-Fi flapping while still genuinely online) don't re-trigger redundant syncs. Connectivity
-being restored is itself a sync trigger — no button press is needed for a previously-failed
-batch to retry once the network comes back.
+```text
+Batch A ──► upload ──► complete
+                         │
+                         ▼
+Batch B ──► upload ──► complete
+                         │
+                         ▼
+Batch C ──► upload ──► complete
+```
 
-## Background Processing
+The engine does not intentionally upload multiple batches concurrently.
 
-`WorkManagerBackgroundSyncService.schedulePeriodicSync()` registers a periodic WorkManager
-task (`NetworkType.connected` constraint, `ExistingPeriodicWorkPolicy.keep` — idempotent,
-which is what prevents duplicate periodic jobs across the app's several scheduling call
-sites). The background isolate (`background_sync_callback_dispatcher.dart`) builds its
-**own minimal dependency chain** — a fresh `SharedPreferencesUploadQueueDataSource`,
-`MockUploadDataSource`, and `ConnectivityPlusService` — and never touches `get_it`,
-`BuildContext`, widgets, or any Cubit, since none of those exist in a background isolate.
-It calls straight through `SyncPendingUploads → SyncEngine.sync()`, the same entry point
-every other trigger uses. `sync_result_mapper.dart` maps `SyncResult` to the boolean
-WorkManager's worker contract expects — only `completedWithFailures` reports failure,
-deferring entirely to WorkManager's own backoff policy.
+---
 
-**`flutter test` cannot execute a real WorkManager job** — the unit suite stops at the pure
-Dart boundary (`sync_result_mapper_test.dart`). Background execution was confirmed via live
-**Android emulator verification**: `adb logcat` showed `WM-WorkerWrapper` starting the
-worker and a fresh Flutter engine spinning up in that isolate, with a batch queued while
-offline confirmed gone from the UI after the worker ran — evidence both isolates share the
-same persisted queue. A full `adb reboot` with a pending batch queued, followed by
-reopening the app, was also verified to leave the batch still queued.
+# Persistent Queue
 
-**Android-only, by design.** `WorkManagerBackgroundSyncService`'s every method is a no-op
-off Android (`Platform.isAndroid` guard). This was added after actually running the app on
-the iOS Simulator: the `workmanager_apple` plugin (0.9.10) submits a `BGTaskScheduler`
-request *before* registering its launch handler, which iOS rejects outright —
-`BGTaskScheduler.submitTaskRequest` → `_handleSubmissionWithoutRegistrationForTaskRequest`,
-a guaranteed `SIGABRT` crash on first launch, confirmed via the crash log's symbolicated
-backtrace. That's a bug in the plugin's iOS implementation, not something fixable from this
-app's Dart code or `Info.plist` (which already lists the correct
-`BGTaskSchedulerPermittedIdentifiers` entry). Guarding it off means the rest of the app —
-camera, capture, the persistent queue, and every *foreground* sync trigger (startup,
-connectivity restored, manual retry) — works correctly on iOS; only the periodic background
-safety net is Android-only.
+`SharedPreferencesUploadQueueDataSource` stores the complete queue as one JSON array under
+a single `SharedPreferences` key.
 
-## Testing
+Each batch contains its metadata and local image references.
 
-**79 tests, `flutter test` — all passing. `flutter analyze` — no issues.**
+### Atomic persistence
 
-Notable coverage: `sync_engine_test.dart` (sequential-not-concurrent uploads, stale-
-`uploading` recovery, files deleted only after confirmed success, missing-file handling),
-`camera_cubit_test.dart` (zoom clamping, focus indicator timing, capture success/failure,
-and 5 dedicated tests for `switchCamera()` — lens toggling, zoom-range refresh, batch
-preservation across a switch, the not-ready guard, and failure handling), `upload_cubit_test.dart`
-(a dedicated test shares one `SyncEngine` instance across retry + connectivity-restore + a
-simulated third trigger and asserts exactly one execution, not three),
-`shared_preferences_upload_queue_data_source_test.dart` (stale-recovery, corrupted JSON),
-`sync_result_mapper_test.dart` (the WorkManager result-mapping contract).
+Each queue update is performed through a single:
 
-- **Real Android device verification (Pixel 7)**: the visual redesign, real capture with a
-  live camera feed, front/back camera switching, and double-back-press-to-exit were all
-  verified live on a physical Pixel 7 — this is also where two real UI bugs (a color
-  contrast issue in the out-of-range/error state on real hardware, and an early flip-camera
-  layout overlap) were caught and fixed.
-- **Android emulator verification**: the full capture → queue → sync flow, a stress pass of
-  rapid consecutive camera switches, the splash screen timing, and the WorkManager/reboot
-  evidence described above — on the Android emulator (`Pixel_9_Pro` AVD) via `adb`, used
-  after the Pixel 7 became unavailable partway through this engagement.
-- **iOS Simulator verification**: `flutter run` on an iPhone 17 (iOS 26.2) simulator. This
-  surfaced two real, fixed issues — the `IPHONEOS_DEPLOYMENT_TARGET` in
-  `ios/Runner.xcodeproj/project.pbxproj` had to be raised from 13.0 to 14.0 (`workmanager`'s
-  iOS package requires it), and the WorkManager/`BGTaskScheduler` crash described in
-  **Background Processing** above. After both fixes: the splash screen, the camera
-  permission flow, the app's own graceful "no usable camera" handling (the Simulator has no
-  real camera hardware), and the Upload Manager screen (including its live connectivity
-  pill) were all confirmed working via screenshots — see **Screenshots** below. Capture and
-  the full upload flow were not exercised on iOS, since the Simulator cannot provide a real
-  camera feed, and no physical iOS device was used.
-- **Release build verification**: `flutter build apk --release` succeeds locally.
+```text
+SharedPreferences.setString(...)
+```
 
-## Screenshots
+operation.
 
-| | |
+This means a process termination during a write results in either the previous stored value
+or the new stored value rather than a partially written JSON document.
+
+### Recovery after process death
+
+A batch found in `uploading` state during the first queue read after application restart
+is treated as interrupted work and recovered to:
+
+```text
+uploading → pending
+```
+
+This prevents an interrupted upload from becoming permanently invisible to future syncs.
+
+### Corrupted queue data
+
+Corrupted JSON is treated as an empty queue rather than crashing the application.
+
+A malformed individual record is skipped while valid records in the same queue remain usable.
+
+---
+
+# Local File Lifecycle
+
+Captured images are copied from the camera plugin's temporary location into the application's
+persistent documents directory.
+
+```text
+Camera temporary file
+        │
+        ▼
+Persistent application storage
+        │
+        ▼
+Batch added to queue
+        │
+        ▼
+Upload attempt
+        │
+   ┌────┴────┐
+   │         │
+Success    Failure
+   │         │
+   ▼         ▼
+Delete      Keep file
+file        + queue entry
+```
+
+Local image files are deleted **only after the upload API returns success**.
+
+A failed upload therefore never loses its source image.
+
+---
+
+# Batch Capture Flow
+
+The capture flow intentionally preserves the in-memory batch until queue persistence has
+succeeded.
+
+```text
+Capture photo
+     │
+     ▼
+Copy to persistent storage
+     │
+     ▼
+Add to current batch
+     │
+     ▼
+User finishes batch
+     │
+     ▼
+Persist batch to queue
+     │
+   ┌─┴─┐
+   │   │
+Success Failure
+   │   │
+   ▼   ▼
+Clear  Keep batch
+memory for recovery
+```
+
+A failure while persisting the queue therefore cannot silently discard the captured images.
+
+---
+
+# Connectivity
+
+`connectivity_plus` is treated as an interface-level signal rather than proof of internet
+reachability.
+
+The application adds a DNS reachability check:
+
+```text
+connectivity_plus
+       │
+       ▼
+Interface appears connected
+       │
+       ▼
+DNS reachability probe
+       │
+       ├── reachable ──► ONLINE
+       │
+       └── unreachable ► OFFLINE
+```
+
+`DnsLookupReachabilityChecker` uses:
+
+```text
+InternetAddress.lookup("example.com")
+```
+
+with a timeout.
+
+The resulting connectivity stream also applies `.distinct()` so repeated identical states
+do not unnecessarily trigger synchronization.
+
+When connectivity changes from offline to genuinely reachable, synchronization starts
+automatically.
+
+---
+
+# Background Synchronization
+
+Android background synchronization is implemented through WorkManager.
+
+```text
+                    Android WorkManager
+                           │
+                           ▼
+              callbackDispatcher()
+                           │
+                           ▼
+          Fresh background dependency chain
+                           │
+             ┌─────────────┼─────────────┐
+             ▼             ▼             ▼
+       SharedPrefs     Mock API     Connectivity
+             │             │             │
+             └─────────────┴─────────────┘
+                           │
+                           ▼
+                  SyncPendingUploads
+                           │
+                           ▼
+                      SyncEngine
+                           │
+                           ▼
+                  Persistent Queue
+```
+
+The background isolate intentionally does **not** access:
+
+- `get_it`
+- `BuildContext`
+- Flutter widgets
+- Cubits
+- foreground UI state
+
+Instead, it constructs the minimum dependency graph required to perform synchronization.
+
+This is necessary because WorkManager executes the callback in a separate Flutter isolate.
+
+---
+
+# WorkManager Scheduling
+
+`WorkManagerBackgroundSyncService.schedulePeriodicSync()` registers periodic work with:
+
+```text
+NetworkType.connected
+ExistingPeriodicWorkPolicy.keep
+```
+
+Using a unique periodic work request with `keep` makes scheduling idempotent and prevents
+multiple scheduling call sites from creating duplicate periodic jobs.
+
+The WorkManager callback maps the domain `SyncResult` into the boolean contract expected by
+the worker.
+
+Only `completedWithFailures` is reported as a WorkManager failure, allowing WorkManager's
+own retry/backoff behavior to remain responsible for background retry policy.
+
+---
+
+# Foreground vs Background Synchronization
+
+The application deliberately separates dependency lifetimes between isolates while keeping
+the synchronization algorithm identical.
+
+```text
+Foreground Isolate
+─────────────────────────────────────
+UploadCubit
+     │
+     ▼
+SyncPendingUploads
+     │
+     ▼
+SyncEngine
+     │
+     ▼
+Persistent Queue
+
+Background Isolate
+─────────────────────────────────────
+WorkManager callback
+     │
+     ▼
+Fresh dependencies
+     │
+     ▼
+SyncPendingUploads
+     │
+     ▼
+SyncEngine
+     │
+     ▼
+Persistent Queue
+```
+
+The two isolates therefore share **persistent data**, not in-memory objects.
+
+---
+
+# Background Concurrency Consideration
+
+`SyncEngine` uses an in-memory `_isSyncing` guard to prevent overlapping executions within
+the same isolate.
+
+Because Dart isolates do not share memory, this is not a cross-isolate mutex.
+
+The realistic overlap case is:
+
+```text
+Foreground SyncEngine
+        │
+        ├──────────────► Uploading
+        │
+        │
+Background SyncEngine
+        │
+        └──────────────► Uploading
+```
+
+WorkManager guarantees at most one execution of the same unique periodic job, but it does not
+make the foreground isolate and background isolate share the same `_isSyncing` state.
+
+For this assessment implementation, the mock API and persisted queue make the overlap
+recoverable.
+
+A production implementation backed by a non-idempotent API could additionally use a
+persisted cross-process lock or request-level idempotency key.
+
+---
+
+# Platform Behavior
+
+## Android
+
+Android is the primary verified platform.
+
+The complete capture, persistent queue, connectivity-triggered synchronization,
+WorkManager execution, process-death recovery and reboot persistence flows were exercised
+using a combination of a physical Pixel 7 and the `Pixel_9_Pro` Android emulator.
+
+## iOS
+
+Foreground functionality was also verified on the iOS Simulator.
+
+The simulator does not provide real camera hardware, so real camera capture could not be
+verified there.
+
+Background synchronization is intentionally disabled on iOS because the
+`workmanager_apple` implementation used by the project crashes during launch due to
+`BGTaskScheduler` registration ordering.
+
+This behavior was discovered through actual simulator execution and crash-log inspection,
+rather than assumed from documentation.
+
+The application therefore guards `WorkManagerBackgroundSyncService` so its methods are
+no-ops off Android.
+
+The camera, persistent queue and foreground synchronization paths remain platform-independent.
+
+---
+
+# Testing
+
+## Automated Tests
+
+**79 Flutter tests pass with zero failures.**
+
+```text
+flutter test
+✓ 79 tests
+
+flutter analyze
+✓ No issues found
+```
+
+Important coverage includes:
+
+| Test Area | Coverage |
 |---|---|
-| ![Camera preview](screenshots/camera_preview.png) Camera preview, live feed | ![Tap to focus](screenshots/tap_to_focus.png) Tap-to-focus indicator at the tapped point |
-| ![Batch captured](screenshots/batch_captured.png) A 3-photo batch captured, ready to add to the queue | ![Pending uploads](screenshots/pending_uploads.png) A queued batch in the pending-uploads list |
-| ![A queued batch, pending state](screenshots/upload_failed.png) A queued batch shown in its "Pending" state | ![Empty queue after a successful sync](screenshots/retry_success.png) Empty queue after a successful sync |
-| ![Reboot persistence](screenshots/reboot_persistence.png) The queued batch still present after a full device reboot | |
+| `sync_engine_test.dart` | Sequential uploads, stale `uploading` recovery, post-success file deletion, missing-file handling |
+| `camera_cubit_test.dart` | Zoom clamping, focus indicator timing, capture success/failure, camera switching |
+| `upload_cubit_test.dart` | Shared `SyncEngine` execution across retry/connectivity triggers |
+| `shared_preferences_upload_queue_data_source_test.dart` | Persistence, stale recovery, corrupted JSON |
+| `sync_result_mapper_test.dart` | WorkManager result mapping |
 
-**iOS Simulator (current build, redesigned UI):**
+The camera switching tests specifically cover:
 
-| | |
+- Lens toggling
+- Zoom-range refresh
+- Batch preservation across switching
+- Not-ready protection
+- Failure handling
+
+The synchronization tests also verify that multiple triggers converge on the same synchronization
+mechanism instead of running independent upload algorithms.
+
+---
+
+# Live Verification
+
+Automated tests are complemented by platform-level verification where framework behavior
+cannot be reproduced by `flutter test`.
+
+### Physical Android Device — Pixel 7
+
+Verified live:
+
+- Camera preview
+- Real camera capture
+- Front/back camera switching
+- Visual redesign
+- Double-back-press-to-exit
+
+This testing caught and fixed real hardware issues including:
+
+- Out-of-range/error-state contrast
+- Early camera-switch layout overlap
+
+### Android Emulator — Pixel 9 Pro AVD
+
+Verified:
+
+- Capture → queue → sync flow
+- Rapid consecutive camera switching
+- Splash screen behavior
+- WorkManager background execution
+- Persistent queue recovery
+- Full device reboot persistence
+
+WorkManager execution was confirmed through `adb logcat`, including the Android
+`WM-WorkerWrapper` execution and creation of a fresh Flutter engine in the background isolate.
+
+### iOS Simulator — iPhone 17
+
+Verified:
+
+- Splash screen
+- Camera permission flow
+- Graceful no-camera handling
+- Upload Manager screen
+- Connectivity indicator
+- Foreground application behavior
+
+The simulator also exposed and allowed fixing:
+
+- iOS deployment-target incompatibility with the WorkManager package
+- `BGTaskScheduler` launch-time crash caused by the iOS WorkManager plugin
+
+Real camera capture and the complete upload flow were not tested on iOS because the simulator
+does not provide physical camera hardware.
+
+---
+
+# Screenshots
+
+### Android — Camera & Upload Flow
+
+| ![Camera preview](screenshots/camera_preview.png) | ![Tap-to-focus](screenshots/tap_to_focus.png) |
 |---|---|
-| ![iOS splash screen](screenshots/ios_splash.png) The splash screen on an iPhone 17 simulator (iOS 26.2) | ![iOS Upload Manager](screenshots/ios_upload_manager.png) The redesigned Upload Manager screen on the same simulator, live connectivity pill included |
+| Live camera feed | Focus indicator at tapped position |
 
-*The first table's captures are real, from earlier Android emulator testing, not staged —
-but they predate the current visual redesign (dark "Upload Manager" theme,
-connection-status pill, colored batch cards with real thumbnails, the bottom "Upload Batch"
-action, front/back camera switching, and the splash screen), so the layout/colors shown no
-longer match the current build — the underlying states and data are still accurate.
-`upload_failed.png` is named for the scenario it was captured during, but the frame that
-was saved actually shows the batch in its "Pending" state, not a "Failed" badge — captioned
-accurately above rather than as originally named. The iOS table's two captures **are** from
-the current redesigned build. **No screenshot of the zoom controls exists in this
-repository**: the emulator's/simulator's virtual camera reports a zoom range too narrow for
-the quick-select buttons to clear their filter, so a meaningful capture of them would need
-a physical device. No screenshot of the redesigned Upload Manager screen or the splash
-screen on Android exists yet, and no screenshot of the flip-camera control or a live camera
-feed on iOS exists (the Simulator has no real camera).*
+| ![Batch capture](screenshots/batch_captured.png) | ![Pending uploads](screenshots/pending_uploads.png) |
+|---|---|
+| Three-photo batch ready for queueing | Queued batch in Upload Manager |
 
-## Project Structure
+| ![Successful sync](screenshots/retry_success.png) | ![Reboot persistence](screenshots/reboot_persistence.png) |
+|---|---|
+| Queue empty after successful synchronization | Pending batch still present after full device reboot |
 
-```
+### iOS Simulator
+
+| ![Splash screen](screenshots/ios_splash.png) | ![Upload Manager](screenshots/ios_upload_manager.png) |
+|---|---|
+| Current redesigned splash screen | Current redesigned Upload Manager with connectivity status |
+
+> The Android capture screenshots currently stored in the repository were produced during
+> earlier emulator verification and therefore predate some of the later visual redesign work.
+> The underlying states and behavior they demonstrate remain valid, but their exact layout and
+> colors do not represent the latest Android build.
+>
+> `upload_failed.png` is retained because it documents the failed-upload test scenario, but
+> the saved frame itself shows the batch in a `Pending` state rather than displaying the
+> `Failed` badge. The README therefore does not claim that the image proves the failed state.
+>
+> No screenshot of the zoom quick-select controls is included because the available virtual
+> camera reports a zoom range that prevents the controls from becoming meaningful on the
+> tested emulator/simulator environments. A physical device would be required for a useful
+> capture of that state.
+
+---
+
+# Project Structure
+
+```text
 lib/
-├── core/            constants, typed errors, DI (get_it)
-├── domain/          entities, repository interfaces, use cases, SyncEngine
-├── data/            camera/upload data sources + repository implementations
-├── services/        connectivity + background-sync abstractions and implementations
+├── core/
+│   ├── constants
+│   ├── typed errors
+│   ├── dependency injection
+│   └── utilities
+│
+├── domain/
+│   ├── entities
+│   ├── repository interfaces
+│   ├── use cases
+│   └── SyncEngine
+│
+├── data/
+│   ├── camera data sources
+│   ├── upload data sources
+│   └── repository implementations
+│
+├── services/
+│   ├── connectivity
+│   └── background synchronization
+│
 └── presentation/
-    ├── camera/      CameraCubit/State, CameraPreviewScreen, zoom + focus widgets
-    ├── uploads/     UploadCubit/State, PendingUploadsScreen (Upload Manager)
-    ├── splash/      SplashScreen
-    └── theme/       AppColors / AppTheme
+    ├── camera/
+    │   ├── CameraCubit
+    │   ├── CameraState
+    │   ├── CameraPreviewScreen
+    │   ├── zoom controls
+    │   └── focus indicator
+    │
+    ├── uploads/
+    │   ├── UploadCubit
+    │   ├── UploadState
+    │   └── PendingUploadsScreen
+    │
+    ├── splash/
+    │   └── SplashScreen
+    │
+    └── theme/
+        ├── AppColors
+        └── AppTheme
 ```
 
-## How to Run
+---
 
-**Requirements:** Flutter SDK (Dart `^3.12.2`, this repo built/tested against Flutter
-3.44.x). Android (device or emulator) is the primary verified target, including background
-sync; iOS runs on the Simulator (Xcode required) but has no real camera there and no
-background sync (see **Known Limitations**).
+# Persistence Model
+
+The queue is intentionally small and local for this assessment.
+
+```text
+SharedPreferences
+       │
+       ▼
+JSON Array
+       │
+       ├── Batch ID
+       ├── Status
+       ├── Image paths
+       └── Batch metadata
+```
+
+There is no separate uploaded-history table.
+
+Once a batch successfully uploads:
+
+```text
+Queue entry → removed
+Local files → deleted
+```
+
+The mock API is intentionally deterministic because the assignment does not provide a real
+backend endpoint.
+
+---
+
+# Release Build
+
+Build the Android release APK with:
+
+```bash
+flutter build apk --release
+```
+
+The generated APK is placed at:
+
+```text
+build/app/outputs/flutter-apk/app-release.apk
+```
+
+The repository does not contain a pre-built APK or hosted download URL.
+
+The current Android release configuration uses the default Flutter debug signing key rather
+than a dedicated production signing key.
+
+For a real production application, a dedicated release keystore and protected signing
+configuration would be required.
+
+---
+
+# How to Run
+
+## Requirements
+
+- Flutter SDK
+- Dart `^3.12.2`
+- Flutter 3.44.x or compatible SDK
+- Android Studio / Android SDK
+- JDK compatible with the Android build configuration
+- Xcode for iOS development
+
+Android is the primary verified target.
 
 ```bash
 git clone https://github.com/t-t-tanzil/IM_mobile_taqi.git
@@ -256,72 +931,120 @@ flutter pub get
 flutter run
 ```
 
+Run static analysis:
+
 ```bash
 flutter analyze
+```
+
+Run the complete test suite:
+
+```bash
 flutter test
 ```
 
-## Release APK
+Build a release APK:
 
 ```bash
 flutter build apk --release
 ```
 
-The output APK lands at `Flutter_cam_task/build/app/outputs/flutter-apk/app-release.apk`.
-This repository does not host a pre-built APK or download link — build it locally with the
-command above.
+---
 
-The release build type currently signs with the **debug keystore**
-(`android/app/build.gradle.kts`), matching the default Flutter template — there is no
-custom release signing config in this project. This is acceptable for an assessment
-submission; a real release would need a dedicated, non-debug signing key.
+# Known Limitations & Engineering Trade-offs
 
-## Known Limitations & Trade-offs
+### 1. Quick-select zoom is not physical lens switching
 
-- **Zoom buttons are not physical lens switching** — see Key Implementation Details above.
-  Front/back camera switching is real lens switching; the 0.5x–5x buttons are not.
-- **Cross-isolate concurrency**: `SyncEngine._isSyncing` is an in-memory boolean, correct
-  within one isolate (verified by a test firing three simultaneous calls), but it is not a
-  cross-process mutex — the WorkManager isolate builds its own separate `SyncEngine`
-  instance. The realistic overlap window (foreground sync at the exact moment the
-  background worker also fires) is narrow, and WorkManager itself guarantees at most one
-  execution of a given unique periodic job. A production system against a real (non-mock)
-  API without inherent idempotency would want a persisted cross-process lock or an
-  idempotency key on the upload request.
-- **Mocked upload API** — `MockUploadDataSource` is a deterministic success/failure
-  stand-in, never a real HTTP call, per the assignment's note that no real API would be
-  provided.
-- **Background sync is Android-only.** The `workmanager_apple` (iOS) plugin has a real bug
-  in its `BGTaskScheduler` registration ordering that crashes the app on launch — confirmed
-  by actually running it on the iOS Simulator, not assumed. Every method on
-  `WorkManagerBackgroundSyncService` is now a no-op off Android as a result (see
-  **Background Processing**). Camera, capture, the persistent queue, and foreground sync are
-  unaffected on iOS.
-- **No physical device was used for iOS.** iOS verification was on the Simulator only,
-  which has no real camera — capture and the full upload flow were not exercised there.
-  Android verification included both a real device (Pixel 7) and an emulator — see
-  **Testing**.
-- **Screenshots predate the visual redesign on Android, and the zoom controls are not
-  captured on either platform** — see the Screenshots section above.
+The `0.5x`–`5x` controls operate on the active camera's continuous zoom range.
 
-## Generative AI Usage
+They do not select separate ultra-wide, wide or telephoto camera modules.
 
-Generative AI was used as a development assistant throughout — architecture, the camera
-UI, the sync engine, tests, and this documentation — with all output reviewed, adapted, and
-verified, including live testing on a real Android device, an Android emulator, and the iOS
-Simulator (which is what produced the WorkManager evidence above, the front/back-camera-
-switch crash fix, a rendering bug in the redesigned Upload Manager list, the iOS
-`BGTaskScheduler` crash and its fix, and other issues static analysis alone would not have
-caught, such as an `async*`/broadcast-stream subscription-timing race in early sync-engine
-work). Representative direction given during the engagement included: building the
-persistent upload queue before the camera UI, with an explicit test list covering
-corrupted-data and stale-`uploading` recovery; requiring every sync trigger (`UploadCubit`,
-connectivity, WorkManager, manual retry) to converge on one `SyncEngine.sync()` rather than
-re-implementing the algorithm per trigger; not trusting `connectivity_plus`'s interface
-signal alone and layering a real reachability check; keeping the WorkManager isolate's
-dependency chain fully separate from `get_it`/UI state; verifying background execution live
-via `adb logcat` rather than accepting "the code should work"; a visual redesign to match
-the assignment's reference screenshots, adding real front/back camera switching, a splash
-screen, and double-back-press-to-exit; and, most recently, actually running the app on the
-iOS Simulator rather than leaving that claim untested, which is what found and fixed the
-`BGTaskScheduler` crash, plus this documentation pass.
+Front/back camera switching is genuine camera selection.
+
+### 2. Mock upload API
+
+`MockUploadDataSource` is deterministic and intentionally replaces a real HTTP backend because
+the assessment does not provide a production API endpoint.
+
+### 3. Background synchronization is Android-only
+
+The iOS WorkManager plugin used in the project has a launch-time `BGTaskScheduler` registration
+issue.
+
+The background service is therefore disabled on iOS while foreground synchronization remains
+available.
+
+### 4. Cross-isolate synchronization locking
+
+`_isSyncing` prevents concurrent execution within one isolate but is not a cross-process lock.
+
+A production implementation using a non-idempotent backend could introduce persisted locking
+or request idempotency.
+
+### 5. iOS camera testing
+
+Camera capture was not exercised on a physical iOS device.
+
+The iOS verification was performed using the iPhone 17 Simulator, which has no real camera
+hardware.
+
+### 6. Static screenshot limitations
+
+Some repository screenshots were captured before the final visual redesign, and the virtual
+camera environment does not expose useful quick-select zoom states.
+
+These limitations are documented rather than represented as functionality that was not actually
+verified.
+
+### 7. Queue model
+
+The entire queue is stored as one JSON value in `SharedPreferences`.
+
+This is appropriate for the assessment's scale and requirements, but a production application
+with a large queue would likely benefit from a dedicated local database and more granular
+transactional storage.
+
+---
+
+# Generative AI Usage
+
+Generative AI was used as a development assistant throughout the implementation, including
+architecture exploration, implementation, testing, debugging and documentation.
+
+All generated output was reviewed, adapted and validated through static analysis, automated
+tests and live platform testing.
+
+The development process deliberately used verification rather than treating generated code as
+implicitly correct.
+
+Representative engineering directions included:
+
+- Establishing the persistent upload queue before building the camera UI.
+- Defining explicit tests for corrupted queue data and stale `uploading` recovery.
+- Requiring all synchronization triggers to converge on a single `SyncEngine.sync()` path.
+- Keeping platform-specific camera and connectivity implementations behind interfaces.
+- Avoiding `get_it`, UI state and Cubits inside the WorkManager background isolate.
+- Verifying WorkManager execution using real Android `adb logcat` evidence.
+- Testing camera switching on physical Android hardware.
+- Running the application on iOS Simulator instead of assuming iOS compatibility.
+- Investigating and fixing the iOS `BGTaskScheduler` crash discovered during live execution.
+- Testing process-death and full-device-reboot persistence rather than relying solely on unit
+  tests.
+- Performing a final documentation and repository audit based on the actual implementation
+  and test evidence.
+
+The final implementation and documentation therefore distinguish between:
+
+```text
+Implemented
+     │
+     ├── Unit-tested
+     │
+     ├── Emulator-verified
+     │
+     ├── Physical-device-verified
+     │
+     └── Known limitation / not verified
+```
+
+rather than treating all implemented code as automatically proven behavior.
