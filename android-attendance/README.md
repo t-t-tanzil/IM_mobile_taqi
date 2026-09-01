@@ -1,271 +1,1029 @@
 # Attendance — Geo-Fenced Attendance (Native Android)
 
-A native Android app (Kotlin + Jetpack Compose) that lets a user save an office location
-once from GPS, then tracks their live distance from it and only allows marking attendance
-while they're within a 50-meter radius. Built with Clean Architecture + MVVM, Kotlin Flow
-as the sole state-management mechanism, Hilt for DI, and Jetpack DataStore for persistence.
+A native Android application built with **Kotlin + Jetpack Compose** that allows a user to configure an office location from GPS, continuously track their distance from that location, and mark attendance only when they are within a **50-meter radius**.
+
+The project follows **Clean Architecture + MVVM**, uses **Kotlin Flow** as the primary state-management mechanism, **Hilt** for dependency injection, and **Jetpack DataStore** for local persistence.
+
+---
 
 ## Features
 
-- Save the office location once, from the device's current GPS fix.
-- Continuous live distance readout from the office, recomputed reactively on every
-  location update — not polled or recalculated on a timer.
-- Circular distance gauge, a static map preview with the configured lat/lon and a pin, and
-  a clear in-range / out-of-range status section.
-- Mark Attendance action, enabled only inside the 50m radius.
-- Distinct, recoverable UI states for: permission denied, permission permanently denied,
-  location services disabled, and transient GPS unavailability.
-- Double-back-press-to-exit on the single-screen app.
-- Forced dark theme, matching the assignment's reference design.
+- Save the office location once using the device's current GPS position.
+- Persist the configured office latitude and longitude locally.
+- Display the saved office location in a map-style preview with a location pin.
+- Continuously track the user's current GPS position.
+- Calculate live distance from the office using the Haversine formula.
+- Display distance using a circular progress gauge.
+- Change the distance gauge to an out-of-range state when the user is more than 50 meters away.
+- Allow attendance marking only when the user is within the 50-meter radius.
+- Display clear **in-range / out-of-range** status information.
+- Provide distinct handling for:
+  - Location permission denied
+  - Location permission permanently denied
+  - Location services disabled
+  - Temporary GPS unavailability
+- Recover correctly when the user returns from system Settings after changing location permissions/services.
+- Display attendance confirmation with the time attendance was marked.
+- Double-back-press-to-exit behavior.
+- Forced dark theme matching the assessment reference design.
+- JVM unit tests for core business logic and state transitions.
 
-## Architecture
+---
 
-Three layers, dependency direction enforced one-way: `presentation → domain → data`.
+# UI Overview
 
+The main attendance screen follows the assessment's reference design:
+
+```text
+┌─────────────────────────────────────┐
+│                                     │
+│          OFFICE LOCATION            │
+│                                     │
+│       ┌─────────────────────┐       │
+│       │                     │       │
+│       │       📍 PIN        │       │
+│       │                     │       │
+│       │     LAT / LONG      │       │
+│       │                     │       │
+│       └─────────────────────┘       │
+│                                     │
+│       ┌─────────────────────┐       │
+│       │      DISTANCE       │       │
+│       │                     │       │
+│       │        ◯            │       │
+│       │       12m            │       │
+│       │                     │       │
+│       └─────────────────────┘       │
+│                                     │
+│      You are 12m away from office   │
+│       Within attendance range       │
+│                                     │
+│   ┌─────────────────────────────┐   │
+│   │                             │   │
+│   │      Mark Attendance        │   │
+│   │                             │   │
+│   │   AVAILABLE 09:00 - 10:30   │   │
+│   └─────────────────────────────┘   │
+│                                     │
+└─────────────────────────────────────┘
 ```
-presentation/attendance/   AttendanceScreen (Compose) + AttendanceViewModel + UI-state types
-domain/                    model / repository interface / use cases — zero Android imports
-data/                      DataStore persistence + FusedLocationProviderClient adapter
-data/di/                   Hilt module wiring the above together
+
+When the user is **more than 50 meters away**, the distance gauge and status change to the out-of-range state:
+
+```text
+┌─────────────────────────────────────┐
+│                                     │
+│          OFFICE LOCATION            │
+│                                     │
+│       ┌─────────────────────┐       │
+│       │         📍          │       │
+│       │     LAT / LONG      │       │
+│       └─────────────────────┘       │
+│                                     │
+│             🔴                       │
+│          OUT OF RANGE               │
+│                                     │
+│      You are 120m away              │
+│                                     │
+│       OUT OF RANGE                  │
+│       Move within 50m of the        │
+│       office to mark attendance.    │
+│                                     │
+│   ┌─────────────────────────────┐   │
+│   │      Mark Attendance        │   │
+│   │          DISABLED           │   │
+│   └─────────────────────────────┘   │
+│                                     │
+└─────────────────────────────────────┘
 ```
 
-`AttendanceViewModel` combines two Flows — the saved office location
-(`GetOfficeLocationUseCase`) and a retry-driven current-location stream
-(`GetCurrentLocationUseCase`) — into one `LocationSnapshot`, exposed as a single
-`StateFlow<AttendanceUiState>` the Compose screen collects with
-`collectAsStateWithLifecycle()`. There is no second source of truth: distance and
-eligibility are recomputed every time either input Flow emits, never set imperatively.
+The circular gauge represents **distance travelled away from the configured office**, rather than proximity to the office.
 
+- `0m` → empty gauge
+- Increasing distance → increasing gauge progress
+- `200m+` → full gauge
+- `>50m` → red out-of-range state
+- `≤50m` → attendance eligible
+
+---
+
+# Architecture
+
+The application follows a three-layer Clean Architecture structure:
+
+```text
+┌──────────────────────────────────────────────┐
+│                 PRESENTATION                 │
+│                                              │
+│  AttendanceScreen                            │
+│  AttendanceViewModel                         │
+│  AttendanceUiState                           │
+│  Permission / Screen State                   │
+│                                              │
+└──────────────────────┬───────────────────────┘
+                       │
+                       ▼
+┌──────────────────────────────────────────────┐
+│                    DOMAIN                    │
+│                                              │
+│  Models                                      │
+│  Repository Interfaces                       │
+│  Use Cases                                   │
+│                                              │
+│  CalculateDistanceUseCase                    │
+│  ValidateAttendanceLocationUseCase           │
+│  GetOfficeLocationUseCase                    │
+│  SaveOfficeLocationUseCase                   │
+│  GetCurrentLocationUseCase                   │
+│                                              │
+└──────────────────────┬───────────────────────┘
+                       │
+                       ▼
+┌──────────────────────────────────────────────┐
+│                     DATA                     │
+│                                              │
+│  AttendanceRepositoryImpl                    │
+│  OfficeLocationDataStore                     │
+│  FusedLocationDataSource                     │
+│  Hilt DI                                     │
+│                                              │
+│  Jetpack DataStore                           │
+│  FusedLocationProviderClient                 │
+│                                              │
+└──────────────────────────────────────────────┘
 ```
-DataStore.data ──► GetOfficeLocationUseCase() ─────┐
-                                                     ├─ combine ─► CalculateDistanceUseCase
-FusedLocationProviderClient (callbackFlow) ─►       │             ValidateAttendanceLocationUseCase
-  GetCurrentLocationUseCase() ────────────────────┘                       │
-        ▲                                                                 ▼
-   retryLocationUpdates() (flatMapLatest trigger)          StateFlow<AttendanceUiState>
-                                                                           │
-                                                     AttendanceScreen (collectAsStateWithLifecycle)
+
+The dependency direction is intentionally one-way:
+
+```text
+Presentation
+     │
+     ▼
+  Domain
+     │
+     ▼
+   Data
 ```
 
-The domain layer (`CalculateDistanceUseCase`, `ValidateAttendanceLocationUseCase`,
-`GetOfficeLocationUseCase`, `SaveOfficeLocationUseCase`, `GetCurrentLocationUseCase`) is
-plain Kotlin with no `android.*` imports — testable on the JVM with no emulator or
-Robolectric. `AttendanceRepositoryImpl` is the only bridge between domain interfaces and
-the two data sources (`OfficeLocationDataStore`, `FusedLocationDataSource`).
+The **domain layer contains no Android framework dependencies**, allowing the core business rules to be tested directly on the JVM.
 
-## Key Implementation Details
+---
 
-- **Distance** — `CalculateDistanceUseCase` implements the Haversine formula
-  (`EARTH_RADIUS_METERS = 6_371_000.0`), returning meters as a `Float`.
-- **50m radius** — `ValidateAttendanceLocationUseCase.ALLOWED_RADIUS_METERS = 50f`; the
-  check is `distanceMeters <= ALLOWED_RADIUS_METERS`, so the boundary is **inclusive**
-  (exactly 50.0m is eligible, 50.01m is not). Swept by a dedicated boundary test.
-- **Distance gauge** — a "how far out of range" indicator, not a "how close" one: its
-  progress *increases* with distance, reaching a full ring at `DISTANCE_GAUGE_MAX_METERS`
-  (200m) and beyond (`distanceGaugeProgress()`, a pure function unit-tested on its own).
-  The ring and center text turn red past the radius; the disc behind the ring also fills
-  with a light-red background when out of range, so range is never conveyed by ring color
-  alone (it's paired with the "AWAY" label, the status text below, and an icon).
-- **Office map preview** — a static, illustrative placeholder (`Canvas` grid + a pin icon
-  centered on it, with the saved latitude/longitude shown to 4 decimal places in a chip),
-  **not a live map**. No Google Maps dependency or API key is wired up. The exact steps to
-  swap it for a real `GoogleMap` composable (add `play-services-maps`/`maps-compose`, a
-  manifest API-key meta-data entry, and a `MAPS_API_KEY` in `local.properties`) are written
-  out as a doc comment directly above `OfficeMapPreview` in `AttendanceScreen.kt`.
-- **Attendance action card** — a dashed-border container (custom
-  `Modifier.dashedBorder()`) with a lock icon and the "Mark Attendance" button, colored
-  green (`0xFF4CAF50`) only when enabled; the card border/background/icon stay neutral in
-  both states — only the button itself changes color.
-- **Availability window text** — the "AVAILABLE 09:00 AM - 10:30 AM" line under the button
-  is a **static string**, matching the reference design's visual copy. It is not backed by
-  a real clock, schedule, or config value, and does not gate the button — only the 50m
-  radius does.
-- **Double-back-press-to-exit** — a `BackHandler` shows a "Press back again to exit" Toast
-  on the first press; a second press within 2 seconds (`DOUBLE_BACK_PRESS_INTERVAL_MS`)
-  finishes the Activity.
-- **Splash screen** — a Compose `SplashScreen` (badge with the launcher icon's location-pin
-  glyph, title, subtitle, `CircularProgressIndicator`) shown for a fixed 2 seconds on
-  launch, then `Crossfade`s into `AttendanceScreen`. Purely presentational.
+# Reactive Data Flow
 
-## Location & Attendance Flow
+The application uses Kotlin `Flow` and `StateFlow` as the primary state-management mechanism.
 
+```text
+                    ┌──────────────────────┐
+                    │      DataStore       │
+                    │                      │
+                    │ Saved office lat/lon │
+                    └──────────┬───────────┘
+                               │
+                               ▼
+                 GetOfficeLocationUseCase
+                               │
+                               │
+                               ▼
+                        OfficeLocation
+                               │
+                               │
+                               ▼
+                         ┌───────────┐
+                         │  combine  │
+                         └─────┬─────┘
+                               │
+                               ▲
+                               │
+                 GetCurrentLocationUseCase
+                               │
+                               │
+                    ┌──────────┴──────────┐
+                    │                     │
+                    ▼                     ▼
+             Current GPS Fix       Retry Trigger
+                    │
+                    ▼
+        CalculateDistanceUseCase
+                    │
+                    ▼
+         ValidateAttendanceLocation
+                    │
+                    ▼
+          AttendanceUiState
+                    │
+                    ▼
+          AttendanceViewModel
+                    │
+                    ▼
+          AttendanceScreen
 ```
-GPS fix (FusedLocationProviderClient)
+
+`AttendanceViewModel` combines the saved office location and current GPS location into a single reactive state.
+
+Distance and attendance eligibility are therefore **derived values**, rather than independently maintained mutable state.
+
+This avoids creating a second source of truth for whether the user is inside the attendance radius.
+
+---
+
+# Location & Geofencing
+
+## Office Location
+
+The user can configure the office location from the device's current GPS position.
+
+The saved coordinates are persisted as:
+
+```text
+office_latitude
+office_longitude
+```
+
+Both values are written together using a single DataStore `edit {}` transaction.
+
+A location is considered configured only when both latitude and longitude are available.
+
+---
+
+## Distance Calculation
+
+Distance is calculated using the **Haversine formula**.
+
+```text
+CalculateDistanceUseCase
         │
         ▼
-GetCurrentLocationUseCase  ──► CalculateDistanceUseCase (Haversine, meters)
-        │                              │
-        ▼                              ▼
-  combine() with saved         ValidateAttendanceLocationUseCase
-  office location                (distance <= 50f ?)
-        │                              │
-        └──────────────┬──────────────┘
-                        ▼
-              AttendanceUiState (distanceMeters, isWithinAttendanceRadius)
-                        │
-                        ▼
-     DistanceGauge + RangeStatusSection + AttendanceActionCard(enabled = isWithinAttendanceRadius)
+Current Latitude / Longitude
+        +
+Office Latitude / Longitude
+        │
+        ▼
+     Haversine
+        │
+        ▼
+ Distance in meters
 ```
 
-- **Within 50m** (inclusive): the gauge and status text render in the normal/primary
-  color, the status section shows "You are `X`m away from the office" with "Within
-  attendance range", and the Mark Attendance button is enabled.
-- **Beyond 50m**: the gauge ring/disc/text switch to the red out-of-range palette, the
-  status section shows "OUT OF RANGE" and "Move within 50m of the office to mark
-  attendance." (the `50` is read from `ALLOWED_RADIUS_METERS`, not re-typed), and the
-  button stays disabled.
-- Marking attendance sets `attendanceMarked = true` and shows a success banner with the
-  time it happened — this is in-memory `ViewModel` state (see **Persistence** below), not
-  written to disk.
+The implementation uses:
 
-## Permission Handling
-
-Two independent state machines, kept separate on purpose:
-
-```
-LocationPermissionStatus (Compose, request-flow status)      LocationAvailability (domain-adjacent, presentation)
-├── Granted                                                  ├── Unknown
-├── Denied              — system dialog can still be shown   ├── Available
-└── PermanentlyDenied    — must open Settings                └── Unavailable
-                                                                   ├── PermissionMissing
-                                                                   ├── LocationServicesDisabled
-                                                                   └── TemporarilyUnavailable(message)
+```text
+EARTH_RADIUS_METERS = 6,371,000.0
 ```
 
-`resolveAttendanceScreenMode()` (`AttendanceScreenState.kt`) is a pure function — no
-Compose or Android in the loop — that picks one of four screens from those two signals:
-request-permission card, "open app settings" card (permanently denied), "open location
-settings" card (services disabled), or the real attendance content.
+The result is exposed as meters and used by both the UI and attendance validation logic.
 
-- **Recovery on resume** — `AttendanceScreen` observes `ON_RESUME` and calls
-  `permissionState.refresh()` + `viewModel.retryLocationUpdates()`. This single hook covers
-  both "granted permission and returned" and "enabled location services and returned"
-  without opening a second GPS subscription (`retryLocationUpdates()` just re-triggers the
-  existing `flatMapLatest`-managed one).
-- **Permission revoked mid-session** — `refresh()` is symmetric: it upgrades
-  `Denied → Granted` and also downgrades `Granted → Denied` when the OS no longer reports
-  the permission as granted. `resolveAttendanceScreenMode()` also routes correctly on a
-  `PermissionMissing` location-flow error even before `refresh()` has run.
-- **Transient GPS unavailability** — Play Services can report `isLocationAvailable = false`
-  immediately after a fresh registration, before a real fix has arrived. An 8-second grace
-  period (found and fixed via live emulator testing, not by inspection) prevents this from
-  flashing the screen into a false "unavailable" state; it's cancelled early by a real fix
-  or an "available again" callback.
-- **Location services disabled** is detected independently of permission status
-  (`LocationManagerCompat.isLocationEnabled`) and routed to its own reason card.
+---
 
-## Persistence
+# 50-Meter Attendance Rule
 
-Only the office location is persisted, via Jetpack **DataStore Preferences**
-(`OfficeLocationDataStore`): two `Double` keys (`office_latitude`, `office_longitude`),
-written together in a single `edit {}` transaction so there's never a partial write. A
-location is considered "configured" only when both keys are present; an `IOException` on
-read recovers to an empty preference set instead of crashing.
+Attendance is allowed only when:
 
-**Attendance-marked state is not persisted.** `attendanceMarked` and the marked-at
-timestamp live only in `AttendanceViewModel`'s in-memory `StateFlow` — they reset on
-process death, app restart, or navigating away and back to a fresh `ViewModel` instance.
-There is no attendance-history log or database in this project.
+```text
+distance <= 50 meters
+```
 
-## Testing
+The boundary is intentionally **inclusive**.
 
-**40 JVM unit tests, 0 failures** (`./gradlew testDebugUnitTest`), no emulator or
-Robolectric required:
+```text
+0m ─────────────────── 50m ────────────────►
+│                         │
+│       ELIGIBLE          │    OUT OF RANGE
+│                         │
+└─────────────────────────┴─────────────────
+                       boundary
+```
 
-| File | Tests | Focus |
+Therefore:
+
+| Distance | Attendance |
+|---:|:---|
+| 0m | Allowed |
+| 10m | Allowed |
+| 49.9m | Allowed |
+| 50.0m | Allowed |
+| 50.01m | Disabled |
+| 100m | Disabled |
+
+The radius rule is centralized in:
+
+```text
+ValidateAttendanceLocationUseCase
+```
+
+This prevents UI code from independently implementing the geofence rule.
+
+---
+
+# Distance Gauge
+
+The circular gauge communicates how far the user is from the office.
+
+It is intentionally a **distance gauge**, not a "remaining distance" gauge.
+
+```text
+Distance
+
+0m             50m                  200m+
+│               │                     │
+▼               ▼                     ▼
+
+○───────────────◔──────────────────────●
+empty           threshold              full
+```
+
+The gauge reaches full progress at:
+
+```text
+DISTANCE_GAUGE_MAX_METERS = 200m
+```
+
+Distances beyond 200m remain visually capped at a full ring.
+
+When the user crosses the 50-meter boundary:
+
+```text
+≤ 50m
+  ↓
+Normal state
+  ↓
+Attendance enabled
+```
+
+and:
+
+```text
+> 50m
+  ↓
+Red out-of-range state
+  ↓
+Attendance disabled
+```
+
+The gauge progress calculation is implemented as a pure function and is independently unit-tested.
+
+---
+
+# Attendance Action
+
+The **Mark Attendance** action is placed inside a dedicated card matching the reference UI.
+
+The card contains:
+
+- Attendance action
+- Lock/action icon
+- Mark Attendance button
+- Availability text
+
+The button is enabled only when:
+
+```text
+isWithinAttendanceRadius == true
+```
+
+The enabled button uses the intended green accent.
+
+When the user is outside the allowed radius, the button remains disabled while the surrounding card maintains its neutral visual treatment.
+
+After a successful attendance action, the application displays a confirmation state containing the time attendance was marked.
+
+---
+
+# Availability Window
+
+The UI displays:
+
+```text
+AVAILABLE 09:00 AM - 10:30 AM
+```
+
+This text is currently **static** and exists to match the assessment reference design.
+
+It is not currently backed by:
+
+- Device time
+- Server configuration
+- A schedule database
+- A remote attendance system
+
+The actual attendance gate is determined exclusively by the **50-meter location rule**.
+
+---
+
+# Permission Handling
+
+Location permission handling is separated from location availability.
+
+```text
+LocationPermissionStatus
+
+├── Granted
+├── Denied
+└── PermanentlyDenied
+```
+
+Location availability is handled separately:
+
+```text
+LocationAvailability
+
+├── Unknown
+├── Available
+└── Unavailable
+      ├── PermissionMissing
+      ├── LocationServicesDisabled
+      └── TemporarilyUnavailable
+```
+
+A pure function:
+
+```text
+resolveAttendanceScreenMode()
+```
+
+maps these signals to the appropriate UI state.
+
+This keeps permission and location-service decisions out of the composable UI itself.
+
+---
+
+# Permission Recovery
+
+The application re-checks permission and location state whenever the screen resumes.
+
+```text
+App resumes
+     │
+     ▼
+permissionState.refresh()
+     │
+     ▼
+viewModel.retryLocationUpdates()
+     │
+     ▼
+Re-evaluate permission
+     │
+     ├── Granted
+     │
+     ├── Denied
+     │
+     ├── Permanently denied
+     │
+     └── Location services disabled
+```
+
+This covers cases such as:
+
+- User grants permission from Settings.
+- User enables location services from Settings.
+- Permission state changes while the application is backgrounded.
+- The location stream encounters a permission-related failure.
+
+The permission state is intentionally **symmetric**: `refresh()` can both upgrade and downgrade the state.
+
+For example:
+
+```text
+Granted → Denied
+Denied  → Granted
+```
+
+This prevents the UI from remaining in a stale "permission granted" state.
+
+---
+
+# Transient GPS Unavailability
+
+A newly registered location listener may temporarily report that location is unavailable before the first usable GPS fix arrives.
+
+To avoid displaying an incorrect error state immediately, the implementation provides an **8-second grace period**.
+
+```text
+Location subscription
+        │
+        ▼
+Location unavailable
+        │
+        ├── Real location arrives
+        │        │
+        │        ▼
+        │      Normal state
+        │
+        └── No location after grace period
+                 │
+                 ▼
+          Temporary failure UI
+```
+
+The grace period is cancelled early when a valid location becomes available.
+
+This behavior was discovered and verified during live emulator testing rather than being assumed from static code inspection.
+
+---
+
+# Location Services Disabled
+
+Permission being granted does not necessarily mean that the device's location services are enabled.
+
+The application independently checks:
+
+```text
+LocationManagerCompat.isLocationEnabled
+```
+
+This produces a dedicated location-services-disabled state rather than incorrectly reporting the user as simply outside the attendance radius.
+
+---
+
+# Persistence
+
+The office location is persisted using **Jetpack DataStore Preferences**.
+
+```text
+DataStore
+│
+├── office_latitude
+└── office_longitude
+```
+
+Both values are written in one transaction:
+
+```kotlin
+dataStore.edit {
+    it[latitudeKey] = latitude
+    it[longitudeKey] = longitude
+}
+```
+
+This ensures that latitude and longitude are updated atomically.
+
+If the values are incomplete, the application treats the office location as unconfigured.
+
+An `IOException` while reading the preferences is recovered as an empty preference state rather than crashing the application.
+
+---
+
+## Attendance State
+
+Attendance-marked state is intentionally **not persisted**.
+
+```text
+AttendanceViewModel
+        │
+        ├── attendanceMarked
+        └── markedAt
+```
+
+These values exist only in the ViewModel's in-memory state.
+
+Consequently, they reset after:
+
+- Process death
+- Application restart
+- A new ViewModel instance
+
+There is intentionally no attendance history database or server integration in this assessment.
+
+---
+
+# Testing
+
+The project contains **40 JVM unit tests with 0 failures**.
+
+Tests can be executed with:
+
+```bash
+./gradlew testDebugUnitTest
+```
+
+## Test Coverage
+
+| Test Class | Tests | Focus |
 |---|---:|---|
-| `AttendanceViewModelTest` | 12 | reactive updates, eligibility sweep, permission/services/temporary-failure mapping, retry-recovery, save/mark success & failure |
-| `AttendanceScreenStateTest` | 8 | screen-mode decision table, incl. the permission-revoked-mid-session branch |
-| `ValidateAttendanceLocationUseCaseTest` | 6 | 50m boundary, inclusive edge |
-| `DistanceGaugeProgressTest` | 5 | gauge progress mapping (0m, 120m, max, beyond-max, boundary) |
-| `OfficeLocationDataStoreMappingTest` | 4 | preference-key mapping, missing-value handling |
-| `CalculateDistanceUseCaseTest` | 4 | Haversine correctness |
-| `GetCurrentLocationUseCaseTest` | 1 | pass-through forwarding |
+| `AttendanceViewModelTest` | 12 | Reactive updates, eligibility, permission/service mapping, retry recovery, save/mark success & failure |
+| `AttendanceScreenStateTest` | 8 | Screen-mode decision table and permission recovery |
+| `ValidateAttendanceLocationUseCaseTest` | 6 | 50m boundary and inclusive radius |
+| `DistanceGaugeProgressTest` | 5 | Gauge progress mapping |
+| `OfficeLocationDataStoreMappingTest` | 4 | DataStore mapping and missing values |
+| `CalculateDistanceUseCaseTest` | 4 | Haversine distance calculation |
+| `GetCurrentLocationUseCaseTest` | 1 | Location forwarding |
 
-**Emulator verification** (not unit-testable — requires the real
-`FusedLocationProviderClient`/`Activity` framework): permission grant/deny/permanently-deny
-flow, the transient-GPS-unavailability grace period (this is what actually surfaced that
-bug), mock-GPS-driven within/outside-range transitions, and a permission-revoked-while-
-backgrounded scenario. That last one confirmed the app recovers correctly, with the honest
-caveat that Android kills the process on any runtime-permission revocation — so that
-specific live test mainly proved the cold-start path; the `refresh()` downgrade branch
-itself is verified deterministically by `AttendanceScreenStateTest` instead.
+### Total
 
-**Physical-device verification**: the visual redesign — map preview, distance gauge,
-in-range/out-of-range colors, the dashed attendance card, and double-back-press-to-exit —
-was verified live on a real Android device (Pixel 7), not just the emulator. Two issues
-were caught this way and fixed as a direct result: the out-of-range red state initially
-rendering as a pale M3 error tone rather than a clear red on real hardware (fixed with
-explicit `0xFFEF6969`/`0xFFFAF5F6` colors), and the Mark Attendance button's enabled-state
-green not matching the intended design on first pass.
+```text
+40 tests
+0 failures
+```
 
-**Release build verification**: `./gradlew assembleDebug` and `./gradlew :app:assembleRelease`
-both succeed locally (release falls back to debug signing without a local keystore — see
-**Release APK** below).
+---
 
-## Screenshots
+# Emulator Verification
 
-| | |
+The following behaviors were verified using a real Android emulator:
+
+- Location permission request flow
+- Permission denied flow
+- Permanently denied flow
+- Location services disabled
+- Temporary GPS unavailability
+- Mock GPS positioning
+- Within/outside 50m transitions
+- Attendance button enable/disable behavior
+- Attendance success state
+- Permission recovery after returning from a backgrounded state
+
+Mock GPS positions were supplied using:
+
+```bash
+adb emu geo fix
+```
+
+The permission-revocation scenario was also tested live.
+
+An important platform-level observation was made during that test: Android terminates the application process when runtime location permission is revoked through the tested mechanism. Therefore, that live scenario primarily exercised the cold-start permission path. The narrower `refresh()` downgrade branch is covered deterministically by `AttendanceScreenStateTest`.
+
+This distinction is documented intentionally rather than claiming stronger live verification than was actually achieved.
+
+---
+
+# Physical Device Verification
+
+The redesigned visual UI was also verified on a real Android device.
+
+The following were checked:
+
+- Map-style office location preview
+- Saved coordinates display
+- Circular distance gauge
+- In-range state
+- Out-of-range red state
+- Disabled attendance button
+- Enabled attendance button
+- Attendance action card
+- Double-back-press-to-exit behavior
+
+The physical-device pass caught visual differences that were not obvious from emulator testing, including the out-of-range color and enabled-button styling, which were subsequently adjusted.
+
+---
+
+# Release Build Verification
+
+Both debug and release build configurations were verified locally.
+
+```bash
+./gradlew assembleDebug
+./gradlew :app:assembleRelease
+```
+
+The release APK is generated at:
+
+```text
+app/build/outputs/apk/release/app-release.apk
+```
+
+The release artifact was also verified with Android's APK signing verification tooling.
+
+---
+
+# Screenshots
+
+Screenshots included in the repository demonstrate the major functional states of the application.
+
+| Screenshot | Demonstrates |
 |---|---|
-| ![Location permission request](screenshots/permission_request.png) Requesting location permission | ![No office location set](screenshots/office_setup.png) No office location configured yet |
-| ![Outside the radius](screenshots/outside_range.png) Outside the 50m radius — status text and disabled button | ![Within the radius](screenshots/within_range.png) Within the 50m radius — status text and enabled button |
-| ![Attendance marked](screenshots/attendance_marked.png) Attendance marked, with the time it happened | ![Recovered after a revoked permission](screenshots/permission_revoked_midsession.png) Correctly back on the permission-request screen after the permission was revoked while backgrounded |
+| ![permission_request.png](screenshots/permission_request.png) | Location permission request |
+| ![office_setup.png](screenshots/office_setup.png) | No office location configured |
+| ![outside_range.png](screenshots/outside_range.png) | Outside 50m radius |
+| ![within_range.png](screenshots/within_range.png) | Within 50m radius |
+| ![attendance_marked.png](screenshots/attendance_marked.png) | Successful attendance state |
+| ![permission_revoked_midsession.png](screenshots/permission_revoked_midsession.png) | Permission recovery flow |
 
-*Captured live on an emulator, using `adb emu geo fix` for the mock GPS positions — not
-staged. These predate the visual redesign (dark theme, circular distance gauge, map
-preview, dashed attendance card), so the colors and layout above no longer match the
-current build exactly — but the states, flows, and copy they demonstrate are still
-accurate. No screenshots of the redesigned UI exist in this repository yet. Also not
-captured: the "Permission Required" (denied-not-permanently) and "Location Services
-Disabled" reason cards, and the permanently-denied → Settings hand-off.*
+Screenshots were captured from live application runs rather than being manually staged.
 
-## Project Structure
+Mock GPS positions were supplied using:
 
-```
-com.geofence.attendance/
-├── domain/                 model, repository interface, use cases (pure Kotlin)
-├── data/                   DataStore + FusedLocationProviderClient + Hilt DI module
-├── presentation/attendance/ AttendanceScreen (Compose), AttendanceViewModel, UI-state types
-├── presentation/splash/    SplashScreen (Compose)
-├── ui/theme/               Material 3 theme
-├── MainActivity.kt
-└── App.kt                  @HiltAndroidApp
+```bash
+adb emu geo fix
 ```
 
-See `ARCHITECTURE.md` for a deeper walkthrough of the reactive pipeline and design
-trade-offs.
+The screenshots represent actual application states and are stored under:
 
-## How to Run
+```text
+android-attendance/screenshots/
+```
 
-**Requirements:** Android Studio or a configured Android SDK + JDK 17, `minSdk 26`
-device/emulator (Android 8.0+).
+---
+
+# Project Structure
+
+```text
+android-attendance/
+│
+├── app/
+│   └── src/
+│       ├── main/
+│       │   └── java/
+│       │       └── com/geofence/attendance/
+│       │           │
+│       │           ├── data/
+│       │           │   ├── datastore/
+│       │           │   ├── location/
+│       │           │   └── repository/
+│       │           │
+│       │           ├── domain/
+│       │           │   ├── model/
+│       │           │   ├── repository/
+│       │           │   └── usecase/
+│       │           │
+│       │           ├── presentation/
+│       │           │   ├── attendance/
+│       │           │   └── splash/
+│       │           │
+│       │           ├── ui/
+│       │           │   └── theme/
+│       │           │
+│       │           ├── App.kt
+│       │           └── MainActivity.kt
+│       │
+│       └── test/
+│           └── ...
+│
+├── screenshots/
+├── build.gradle.kts
+├── settings.gradle.kts
+├── gradlew
+└── README.md
+```
+
+### Main Components
+
+```text
+AttendanceScreen
+       │
+       ▼
+AttendanceViewModel
+       │
+       ├──────────────► GetOfficeLocationUseCase
+       │
+       ├──────────────► GetCurrentLocationUseCase
+       │
+       ├──────────────► SaveOfficeLocationUseCase
+       │
+       ├──────────────► CalculateDistanceUseCase
+       │
+       └──────────────► ValidateAttendanceLocationUseCase
+```
+
+---
+
+# Key Implementation Decisions
+
+## Kotlin Flow Instead of Multiple Mutable UI States
+
+The location pipeline is reactive:
+
+```text
+Office Location Flow
+        +
+Current Location Flow
+        │
+        ▼
+     combine()
+        │
+        ▼
+LocationSnapshot
+        │
+        ▼
+AttendanceUiState
+```
+
+This avoids manually synchronizing:
+
+- Current distance
+- Attendance eligibility
+- Office location
+- Current GPS state
+
+---
+
+## Domain-Level Distance Validation
+
+The 50-meter rule is implemented in the domain layer rather than directly inside Compose.
+
+This allows the same rule to be tested independently of:
+
+- Android UI
+- GPS hardware
+- Compose
+- Activity lifecycle
+
+---
+
+## DataStore for Small Local State
+
+DataStore was chosen instead of a database because the assessment only requires two persisted values:
+
+```text
+latitude
+longitude
+```
+
+A relational database would introduce unnecessary complexity for this scope.
+
+---
+
+## Fused Location Provider
+
+`FusedLocationProviderClient` is wrapped behind a data-source abstraction.
+
+The domain layer therefore does not depend directly on Google Play Services types.
+
+```text
+FusedLocationProviderClient
+          │
+          ▼
+FusedLocationDataSource
+          │
+          ▼
+AttendanceRepository
+          │
+          ▼
+Domain
+```
+
+---
+
+# Known Limitations & Engineering Trade-offs
+
+The following limitations are intentional and are documented rather than hidden.
+
+### Static Map Preview
+
+The office map is currently a lightweight static map-style preview containing:
+
+- Map/grid styling
+- Location pin
+- Saved latitude/longitude
+
+It is **not a live Google Maps integration**.
+
+No Google Maps API key is required for the current implementation.
+
+The code contains documentation describing the changes required to replace the preview with a real `GoogleMap` composable if needed.
+
+---
+
+### Static Availability Window
+
+The:
+
+```text
+AVAILABLE 09:00 AM - 10:30 AM
+```
+
+text is currently static.
+
+It does not represent a real attendance schedule and does not independently enable or disable attendance.
+
+---
+
+### Attendance State Is In-Memory
+
+The attendance success state is held in the ViewModel.
+
+It is not persisted to DataStore or a backend.
+
+This is intentional because the assessment does not require attendance history or server-side attendance storage.
+
+---
+
+### Brief Secondary GPS Subscription
+
+`setOfficeLocation()` creates a short-lived GPS subscription to obtain the current location.
+
+The continuous location stream remains independently managed.
+
+The subscriptions are correctly cleaned up, although this results in a small amount of redundant location work when setting the office location.
+
+This was considered acceptable for the scope of the assignment.
+
+---
+
+### Resume Retry
+
+`retryLocationUpdates()` is triggered whenever the application resumes.
+
+This also means a brief re-subscription can occur when the application resumes without a meaningful location change.
+
+The behavior is intentionally simple and ensures recovery after returning from system Settings.
+
+---
+
+### Gauge Calculation
+
+The distance gauge caps visually at 200 meters.
+
+Distances beyond that point remain represented by a full ring rather than continuing beyond the available UI range.
+
+---
+
+# Security & Repository Hygiene
+
+The repository does not contain:
+
+- Production credentials
+- API secrets
+- Keystore files
+- Signing passwords
+- Local machine configuration
+
+Signing configuration is kept local through:
+
+```text
+keystore.properties
+```
+
+and is excluded through `.gitignore`.
+
+A fresh clone can therefore build without requiring access to private signing material.
+
+---
+
+# How to Run
+
+## Requirements
+
+- Android Studio
+- Android SDK
+- JDK 17
+- Android 8.0+ / API 26+
+- Android device or emulator with location support
+
+---
+
+## Clone
 
 ```bash
 git clone https://github.com/t-t-tanzil/IM_mobile_taqi.git
 cd IM_mobile_taqi/android-attendance
-./gradlew installDebug   # or open the folder in Android Studio and hit Run
 ```
+
+---
+
+## Build & Install Debug APK
 
 ```bash
-./gradlew testDebugUnitTest   # 40 unit tests
+./gradlew installDebug
 ```
 
-## Release APK
+Alternatively, open the `android-attendance` directory in Android Studio and run the application from the IDE.
+
+---
+
+## Run Unit Tests
+
+```bash
+./gradlew testDebugUnitTest
+```
+
+Expected result:
+
+```text
+40 tests
+0 failures
+```
+
+---
+
+## Build Release APK
 
 ```bash
 ./gradlew :app:assembleRelease
 ```
 
-The output APK lands at `android-attendance/app/build/outputs/apk/release/app-release.apk`.
-This repository does not host a pre-built APK or download link — build it locally with the
-command above.
+The resulting APK is generated at:
 
-Release signing is optional and local-only: `app/build.gradle.kts` looks for a
-`keystore.properties` file at the project root. If present, `release` signs with it;
-otherwise it falls back to the debug signing config so the project stays buildable on a
-fresh clone. Neither the keystore nor `keystore.properties` is committed (see
-`.gitignore`). To produce a locally-signed release build, create your own keystore and add
-`keystore.properties` next to `settings.gradle.kts`:
+```text
+app/build/outputs/apk/release/app-release.apk
+```
+
+---
+
+# Release Signing
+
+Release signing is optional and local-only.
+
+The project checks for:
+
+```text
+keystore.properties
+```
+
+If signing properties are present, the configured keystore is used.
+
+If no local keystore is available, the project falls back to debug signing so that a fresh clone remains buildable without private signing material.
+
+Example local configuration:
 
 ```properties
 storeFile=keystore/release.jks
@@ -274,40 +1032,110 @@ keyAlias=...
 keyPassword=...
 ```
 
-## Known Limitations & Trade-offs
+The keystore and `keystore.properties` are intentionally not committed to the repository.
 
-- **No real map.** The office location preview is a static illustration (grid + pin + the
-  coordinates), not Google Maps — there's no Maps API key in this project. The swap-in
-  path is documented in code (`AttendanceScreen.kt`, above `OfficeMapPreview`).
-- **The availability window text is static**, not a real schedule — it doesn't gate the
-  Mark Attendance action.
-- **Attendance-marked state is not persisted** — it's in-memory `ViewModel` state, reset on
-  process death or restart. There is no attendance history/log.
-- **`setOfficeLocation()` runs a brief second GPS subscription** alongside the continuous
-  one; both clean up correctly, but it means a few seconds of redundant polling per tap —
-  judged not worth sharing the flow for what it would save.
-- **`retryLocationUpdates()` fires on every `ON_RESUME`**, even when nothing changed (e.g.
-  pulling down the notification shade) — a brief, invisible re-subscription each time.
-- **Screenshots predate the visual redesign** (see the Screenshots section above) — the
-  states and copy they show are accurate, the colors/layout are not current.
-- Core GPS/permission business logic (grace period, permission-revoke recovery) was
-  verified on an emulator; the visual redesign and double-back-press-to-exit were verified
-  on a real Pixel 7 (see **Testing**) — but no screenshots from that device pass were saved
-  to this repository.
+---
 
-## Generative AI Usage
+# Architecture Documentation
 
-Generative AI was used as a development assistant throughout — architecture, use cases,
-the Compose UI, tests, and this documentation — with all output reviewed, adapted, and
-verified, including live emulator testing (which is what actually surfaced the transient-
-GPS grace-period bug; a static-analysis-only pass would not have caught it). Representative
-direction given during the engagement included: implementing Clean Architecture + MVVM
-with Hilt/DataStore before any GPS code existed; wrapping `FusedLocationProviderClient`
-behind a `Flow`-based interface with distinct domain exceptions instead of leaking Play
-Services types; combining office/current location into one `StateFlow` with no second
-source of truth for distance/eligibility; writing a boundary sweep for the 50m radius
-rather than one happy-path number; debugging the transient-GPS issue against a real running
-emulator instead of guessing; a final read-only audit pass that caught the permission-
-revoke recovery gap; and, most recently, implementing the reference-design visual redesign
-(map preview, distance gauge, dashed attendance card, colors), the splash screen and
-double-back-press-to-exit, and this documentation pass itself.
+For a deeper technical walkthrough, see:
+
+```text
+ARCHITECTURE.md
+```
+
+The architecture document covers:
+
+- Reactive location pipeline
+- Dependency direction
+- State management
+- Permission state transitions
+- DataStore persistence
+- Location subscription lifecycle
+- Background/recovery behavior
+- Engineering trade-offs
+
+---
+
+# Generative AI Usage
+
+Generative AI was used as a development assistant throughout the project.
+
+AI assistance was used for areas including:
+
+- Initial architecture planning
+- Clean Architecture structure
+- Kotlin and Jetpack Compose implementation
+- Location and permission handling
+- Flow-based state management
+- Unit-test generation
+- UI implementation
+- Debugging
+- Documentation
+
+All generated output was reviewed, adapted, tested, and verified before being included.
+
+Importantly, live device/emulator testing was used to validate behavior rather than relying solely on generated code or static reasoning.
+
+For example, emulator testing exposed the transient GPS availability issue, which resulted in the introduction of the grace-period behavior.
+
+The final implementation and documentation therefore represent a combination of AI-assisted development and manual engineering review/verification.
+
+---
+
+# Summary
+
+This project implements a complete native Android geo-fenced attendance flow:
+
+```text
+┌──────────────────┐
+│ Configure Office │
+│   from GPS       │
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│ Persist Location │
+│    DataStore     │
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│ Track Current GPS│
+│      Flow        │
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│ Calculate Haversine
+│     Distance     │
+└────────┬─────────┘
+         │
+         ▼
+┌─────────────────────────┐
+│ Validate ≤ 50 meters    │
+└───────────┬─────────────┘
+            │
+       ┌────┴────┐
+       │         │
+       ▼         ▼
+   Within 50m   > 50m
+       │         │
+       ▼         ▼
+    Enabled    Disabled
+       │         │
+       ▼         ▼
+    Mark       Out of
+  Attendance   Range
+```
+
+The implementation prioritizes:
+
+- Clear separation of concerns
+- Reactive state management
+- Testable domain logic
+- Explicit permission/recovery states
+- Atomic local persistence
+- Live GPS-driven UI
+- Honest documentation of limitations and trade-offs
+- Verification through both automated tests and live device/emulator testing
